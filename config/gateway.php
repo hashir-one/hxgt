@@ -1,0 +1,62 @@
+<?php
+
+return [
+    'admin_domain' => env('ADMIN_DOMAIN', env('APP_URL', 'http://localhost:8000')),
+    'checkout_domain' => env('CHECKOUT_DOMAIN', env('APP_URL', 'http://localhost:8000')),
+    'api_domain' => env('API_DOMAIN', env('APP_URL', 'http://localhost:8000')),
+    'device_domain' => env('DEVICE_DOMAIN', env('APP_URL', 'http://localhost:8000')),
+    'max_devices' => (int) env('GATEWAY_MAX_DEVICES', 4),
+    'amount_slot_min' => 1,
+    'amount_slot_max' => 99,
+    'order_expiry_minutes' => (int) env('ORDER_EXPIRY_MINUTES', 10),
+    'late_payment_quarantine_hours' => (int) env('LATE_PAYMENT_QUARANTINE_HOURS', 48),
+    'checkout_stream_enabled' => (bool) env('CHECKOUT_STREAM_ENABLED', false),
+    'anomalies' => [
+        'window_minutes' => (int) env('ANOMALY_WINDOW_MINUTES', 5),
+        'payment_count' => (int) env('ANOMALY_PAYMENT_COUNT', 30),
+        'tiny_amount_minor' => (int) env('ANOMALY_TINY_AMOUNT_MINOR', 200),
+        'tiny_count' => (int) env('ANOMALY_TINY_COUNT', 10),
+        'timezone' => env('ANOMALY_TIMEZONE', 'Asia/Kolkata'),
+        'quiet_hours' => array_map('intval', array_filter(explode(',', (string) env('ANOMALY_QUIET_HOURS', '0,1,2,3,4,5')), fn ($hour) => $hour !== '')),
+    ],
+    'device' => [
+        'heartbeat_interval_seconds' => (int) env('HEARTBEAT_INTERVAL_SECONDS', 60),
+        'heartbeat_timeout_seconds' => (int) env('HEARTBEAT_TIMEOUT_SECONDS', 90),
+        'healthy_heartbeats_to_resume' => (int) env('HEALTHY_HEARTBEATS_TO_RESUME', 2),
+        'request_clock_skew_seconds' => (int) env('DEVICE_REQUEST_CLOCK_SKEW_SECONDS', 300),
+    ],
+    'matching' => [
+        'signal_grace_seconds' => (int) env('SIGNAL_GRACE_SECONDS', 120),
+        'reference_length' => 12,
+    ],
+    'claims' => [
+        'captcha_secret' => env('TURNSTILE_SECRET_KEY'),
+        'captcha_site_key' => env('TURNSTILE_SITE_KEY'),
+        'captcha_hosts' => array_values(array_filter(explode(',', (string) env('TURNSTILE_HOSTNAMES', '')))),
+        'max_attempts' => (int) env('CLAIM_MAX_ATTEMPTS', 5),
+        'open_hours' => (int) env('CLAIM_OPEN_HOURS', 48),
+    ],
+    'breaker' => [
+        'consecutive_threshold' => (int) env('BREAKER_CONSECUTIVE_THRESHOLD', 3),
+        'rolling_threshold' => (int) env('BREAKER_ROLLING_THRESHOLD', 5),
+        'rolling_window_minutes' => (int) env('BREAKER_WINDOW_MINUTES', 15),
+        'cooldown_minutes' => (int) env('BREAKER_COOLDOWN_MINUTES', 10),
+    ],
+    'security' => [
+        'webhook_max_age_seconds' => 300,
+        'otp_ttl_minutes' => 5,
+        'audit_append_only' => true,
+        'admin_ips' => array_values(array_filter(array_map('trim', explode(',', (string) env('ADMIN_IP_ALLOWLIST', ''))))),
+    ],
+    'email' => [
+        'enabled' => (bool) env('BANK_EMAIL_CONFIRMATION_ENABLED', false),
+        'minimum_amount_minor' => (int) env('BANK_EMAIL_MINIMUM_AMOUNT_MINOR', 50000),
+        'sender_allowlist' => array_values(array_filter(array_map('trim', explode(',', (string) env('BANK_EMAIL_SENDER_ALLOWLIST', ''))))),
+        'ingest_secret' => env('EMAIL_INGEST_SECRET'),
+        'merchant_id' => env('BANK_EMAIL_MERCHANT_ID'),
+        'imap_host' => env('BANK_EMAIL_IMAP_HOST', 'imap.gmail.com'),
+        'imap_port' => (int) env('BANK_EMAIL_IMAP_PORT', 993),
+        'imap_encryption' => env('BANK_EMAIL_IMAP_ENCRYPTION', 'ssl'),
+        'imap_validate_certificate' => (bool) env('BANK_EMAIL_IMAP_VALIDATE_CERT', true),
+    ],
+];

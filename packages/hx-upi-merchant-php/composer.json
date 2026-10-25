@@ -1,0 +1,24 @@
+{
+    "name": "hxdev/hx-upi-merchant",
+    "description": "Two-of-two verification helper for HX UPI Gateway merchants",
+    "type": "library",
+    "license": "proprietary",
+    "require": {
+        "php": ">=8.3"
+    },
+    "autoload": {
+        "psr-4": {
+            "HxDev\\UpiMerchant\\": "src/"
+        }
+    },
+    "suggest": {
+        "illuminate/support": "Use MerchantServiceProvider and LaravelPaymentHandler in Laravel 12/13 projects."
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "HxDev\\UpiMerchant\\MerchantServiceProvider"
+            ]
+        }
+    }
+}

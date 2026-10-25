@@ -1,0 +1,8 @@
+<aside class="pay-summary" aria-label="Payment summary">
+    <div class="pay-summary-top"><span class="pay-summary-kicker">{{ $isTransfer ? 'DIRECT TRANSFER' : 'PAYMENT SUMMARY' }}</span><span class="pay-summary-network">UPI <span aria-hidden="true">↗</span></span></div>
+    <div class="pay-merchant"><span class="pay-merchant-avatar">@if($merchantLogo ?? null)<img src="{{ $merchantLogo }}" alt="{{ $merchant->name }}">@else{{ mb_strtoupper(mb_substr($merchant->name, 0, 1)) }}@endif</span><div><p>{{ __('Pay to') }}</p><h1>{{ $merchant->name }}</h1></div></div>
+    <div class="pay-total"><p>{{ __('Total payable') }}</p><div><span>₹</span>{{ number_format($amountMinor / 100, 2) }}<small>INR</small></div><span class="pay-total-caption">{{ $isTransfer ? 'Exact transfer amount' : __('Pay the exact amount shown. Changing it delays confirmation.') }}</span></div>
+    <details class="pay-order-details"><summary>{{ $isTransfer ? 'Transfer details' : __('Order details') }} <span aria-hidden="true">⌄</span></summary><dl><div><dt>{{ $isTransfer ? 'Test reference' : __('Order') }}</dt><dd>{{ $reference }}</dd></div><div><dt>{{ __('Payment method') }}</dt><dd>UPI</dd></div><div><dt>{{ __('Recipient UPI ID') }}</dt><dd>{{ $merchant->upi_vpa }}</dd></div></dl></details>
+    <div class="pay-summary-bottom"><span class="pay-direct-icon" aria-hidden="true">↗</span><div><strong>Direct to the merchant</strong><p>Your UPI app shows the recipient before you approve the payment.</p></div></div>
+    <div class="pay-summary-decoration" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+</aside>

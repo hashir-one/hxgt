@@ -1,0 +1,30 @@
+# Replace example domains, certificate paths and PHP socket before installing.
+# Obtain a certificate covering all four hosts. Keep the application origin private.
+server {
+    listen 80;
+    server_name console.gateway.example api.gateway.example device.gateway.example checkout.gateway.example;
+    return 301 https://$host$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name console.gateway.example api.gateway.example device.gateway.example checkout.gateway.example;
+    ssl_certificate /etc/letsencrypt/live/gateway/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/gateway/privkey.pem;
+    ssl_protocols TLSv1.3;
+    root /srv/hx-pay/public;
+    index index.php;
+    client_max_body_size 6m;
+    # Edge and origin must restrict the console host to ADMIN_IP_ALLOWLIST.
+    # Configure trusted proxy ranges explicitly before enabling a CDN; never trust
+    # arbitrary X-Forwarded-For headers from the public internet.
+    location / { try_files $uri $uri/ /index.php?$query_string; }
+    location ~ ^/index\.php$ {
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
+        fastcgi_param HTTPS on;
+        fastcgi_pass unix:/run/php/php8.5-fpm.sock;
+        fastcgi_read_timeout 30s;
+    }
+    location ~ \.php$ { return 404; }
+    location ~ /\. { deny all; }
+}
