@@ -25,3 +25,7 @@ _ide_helper.php
 Homestead.json
 Homestead.yaml
 Thumbs.db
+
+# Local Android delivery and reference checkouts
+/artifacts/
+/.gateway-reference/

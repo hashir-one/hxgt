@@ -1,0 +1,12 @@
+{
+  "body": "{\"observed_at\":\"2026-10-25T10:00:00Z\",\"sms_listener_healthy\":false,\"notification_listener_healthy\":false,\"app_version\":\"interop-₹\"}",
+  "path": "/api/device/v1/heartbeat",
+  "timestamp": "1792922400",
+  "nonce": "abababababababababababababababababababababababababababababababab",
+  "body_sha256": "2414effb2af2602252e7244c37f09458fb2cc8a08f36a1e6a02ee57069b466a9",
+  "canonical": "POST\n/api/device/v1/heartbeat\n1792922400\nabababababababababababababababababababababababababababababababab\n2414effb2af2602252e7244c37f09458fb2cc8a08f36a1e6a02ee57069b466a9",
+  "public_key_der": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAERaut4tIUO5Ua6rEeZrvkhrDE1duIbkhGxrym+K+PtLwAZo3H2wRECWg+3PCwhaaHMqlXxnOFPwnp831qqLJvHw==",
+  "signature": "MEQCIDeP/kUWkfM5nu79GGL2fAMBQiJEPtzaxYfyhY6gJZ92AiBtM9iVQYzFbCX7m0jmaReQdfiHlyIxJs+vPYBlvs/sHQ==",
+  "pairing_token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "challenge_sha256": "d3fe1d36b1c11543ee1594dc5a927f1a9c1f6af8c13f52fbd68ffe92ca2be905"
+}

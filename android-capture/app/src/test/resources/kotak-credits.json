@@ -1,0 +1,7 @@
+[
+  {"name":"kotak811_masked_account", "body":"Received Rs.12.50 from SAMPLE PERSON in your Kotak811 a/c XX1234 on 24-Oct-26. UPI ref no. 123456789001. View balance: https://kotk.in/KOTAKD/Example -Kotak", "amount_minor":1250, "reference":"123456789001"},
+  {"name":"bank_name_with_double_space", "body":"Received Rs.7.00 in your Kotak Bank AC 1234 from SAMPLE  PERSON on 12-09-26.UPI Ref:123456789002", "amount_minor":700, "reference":"123456789002"},
+  {"name":"bank_plain_account", "body":"Received Rs.23.00 in your Kotak Bank AC 1234 from TEST PERSON on 09-09-26.UPI Ref:123456789003", "amount_minor":2300, "reference":"123456789003"},
+  {"name":"bank_upi_id_and_terminal_period", "body":"Received Rs.12345.67 in your Kotak Bank AC X1234 from sample.person1@examplebank on 09-08-26.UPI Ref:123456789004.", "amount_minor":1234567, "reference":"123456789004"},
+  {"name":"bank_reference_with_leading_zero", "body":"Received Rs.42.00 in your Kotak Bank AC 1234 from SAMPLE BUSINESS on 22-08-26.UPI Ref:012345678905", "amount_minor":4200, "reference":"012345678905"}
+]
