@@ -2,7 +2,7 @@
 
 Implementation of `../app.md`. Target phone: **iQOO Neo 9 Pro (I2304), OriginOS 6, Android 16 / API 36**. Minimum Android 10 / API 29, compile/target SDK 36. Version **0.1.0 (1)**.
 
-**27 October update:** the source includes the staging prepare → fingerprint → submit flow described in [STAGING-PAIRING.md](STAGING-PAIRING.md). It has not yet been tested or installed on the physical phone. Gateway integration status and remaining work are recorded in [../docs/ANDROID-HANDOFF.md](../docs/ANDROID-HANDOFF.md). The server requires Android 13 or newer even though the app can install on API 29. The legacy recovery instructions below apply only with staging pairing disabled.
+**27 October update:** the source includes the staging prepare → fingerprint → submit flow described in [STAGING-PAIRING.md](STAGING-PAIRING.md). It is installed in place; current phone and build results are in TEST-RESULTS.md. Gateway integration status and remaining work are recorded in [../docs/ANDROID-HANDOFF.md](../docs/ANDROID-HANDOFF.md). The server requires Android 13 or newer even though the app can install on API 29. The legacy recovery instructions below apply only with staging pairing disabled.
 
 ## Build and install
 
@@ -49,9 +49,11 @@ Acknowledged receipts expire after seven days; unresolved evidence is retained. 
 
 SMS backfill starts at pairing time and uses a ten-minute overlap. It queries only approved senders, orders equal timestamps by provider ID, and advances its cursor only after processing. Event time is `date_sent` if present, otherwise provider `date`; live broadcasts use `SmsMessage.timestampMillis`. Validate equivalence on this phone with real samples. Notifications use `StatusBarNotification.postTime`; active replay deduplicates notification key plus extracted evidence, while dismissed history cannot be reconstructed. No bank transaction time is invented.
 
-Do not clear app data to repair delivery. Recovery can refresh rules and retry compatible blocked records. A guarded fresh pairing requires the phone lock, stopped session and zero unresolved evidence; owner revocation/migration approval remains a separate server action. Old keys/receipts are preserved and never rebound to another merchant. Lost pairing responses require owner recovery because a proof-of-key recovery endpoint is not implemented.
+Do not clear app data to repair delivery. Uncertain submissions and old records without attempt-bound receipts require the pending-key server recovery API, which is not implemented. Neither the owner panel, a new QR, token expiry nor a general error message can resolve that uncertainty.
 
-After revoking a phone or an interrupted pairing, open **Setup → Prepare a new pairing**, confirm the phone lock, then generate and scan a fresh owner-approved QR. Setup detects a saved signing alias without a device ID and shows this recovery action instead of allowing repeated pairing requests that cannot succeed. Pending evidence or a running capture session blocks preparation. Pairing errors appear in a modal and retain an allowlisted server code (or HTTP status); the app never logs QR tokens or server response bodies. A timeout may have occurred after server registration, so check the merchant Devices page before replacing an identity.
+For a resolved/fresh identity, staging preparation creates a separate key and encrypted immutable request without submitting. Share the SPKI fingerprint, wait for the matching server exception, then explicitly submit before expiry. Submission and activation require stopped capture and zero unresolved evidence. All old keys, attempt history and evidence remain associated with their original identity. Legacy reset permits only a definitively rejected attempt with a matching durable receipt and archives it first; paired identities cannot be reset that way.
+
+A common identity barrier serializes evidence insertion, background work, session transitions and identity changes. Listeners carry a generation ticket so a queued callback cannot be assigned to a newly activated key. Detailed server failures are sanitized before display; tokens, chains and private keys are never logged.
 
 ## Verification
 

@@ -1,8 +1,21 @@
 # Build and test results
 
-## Current source — 27 October 2026
+## Review fixes — 27 October 2026
 
-Staging prepare/review/submit source and test APK build passed, with 14 JVM tests and lint at 0 errors / 29 warnings. Gateway Kotak SMS fixtures passed through actual RE2/J. **The new staged flow has not been run on the physical phone or installed; ADB has no device.** No new APK has been published for this flow. See `../docs/ANDROID-HANDOFF.md`. All APK hashes and phone results below describe the earlier delivered build.
+Implemented the gateway review at `52dff7e`. Built debug application/test APKs and ran JVM tests/lint with **both `hxStagingPairing=true` and `false`**. Each passed 19 JVM tests, including canonical success-contract validation, attempt receipt binding, ambiguous failures, two deterministic identity-barrier concurrency cases and gateway RE2/J fixtures. Lint: 0 errors / 30 warnings.
+
+Physical iQOO / Android 16 results:
+
+- Staging enabled: **19 tests passed** (11 staging lifecycle/crash/guard tests, 2 legacy recovery boundary tests, 2 legacy pairing tests, 1 staging UI test, 3 immutable-outbox tests).
+- Staging disabled: **8 tests passed** (2 legacy recovery boundary tests, 2 legacy pairing tests, 1 legacy UI test, 3 immutable-outbox tests).
+- Installs used `adb install -r`, with the existing debug signer verified. The tested staging APK was restored afterward. Only the temporary test package was uninstalled; the main app remains installed.
+- The main capture preferences file's SHA-256 was identical before and after installation and both test runs. Tests used isolated preferences/databases and cleaned only recorded test-owned key aliases. No real pairing request, bank SMS/notification, payment or outbox resolution was performed.
+- Console evidence remains local in `artifacts/physical-device-tests-review-fixes-staging.txt` and `artifacts/physical-device-tests-review-fixes-nonstaging.txt`; phone-specific diagnostics are excluded from Git.
+
+Current installed staging APK SHA-256: `D1B6500C97B0E7A0C55EE5B0AB9CAD0C3CD8D474A9961E5E1F3DCFD248891FC5`.
+Debug signer SHA-256: `a03c8ede4bafd2b22af3da3e5677de01ef5ff60411be27cbfb8b996ab8d07588`.
+
+The existing phone's legacy pending attempt lacks a bound receipt and **correctly remains blocked**. A new owner QR cannot bypass this. The server pending-key recovery contract is still required. Synthetic successful responses establish implementation behavior, not physical registration or production acceptance.
 
 ## Earlier delivered build — 25 October 2026
 

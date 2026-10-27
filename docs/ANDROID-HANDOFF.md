@@ -2,7 +2,7 @@
 
 Gateway baseline: `3c152dc` (Android attestation verification and scoped staging vendor exception). Android source is now in `android-capture/`. Public TLS pins are configuration values; no TLS private key, APK signing key, QR token, phone database or device diagnostic export is included.
 
-## Android implementation status
+## Initial Android implementation status at fe562a6 (historical)
 
 Kotlin/Compose app, hardware P-256 Keystore identity, pinned TLS, encrypted immutable Room outbox, SMS and notification listeners, foreground capture, backfill, signed API transport and tests are included. The latest staging recovery flow is build-tested but **not yet physically tested or installed**. Earlier physical results in `android-capture/TEST-RESULTS.md` apply to the prior build only. No real bank payment or production acceptance is claimed.
 
@@ -10,7 +10,7 @@ The staging flow is enabled explicitly in `android-capture/gradle.properties`; r
 
 A definitive rejection permits exact saved-request retry within expiry. Network loss, interrupted submission, malformed success or unknown response blocks retry and new preparation. An accepted UUID/key stays separate until explicit credential-gated activation. Activation currently requires stopped capture and **zero unresolved outbox records**; evidence is never reassigned, re-signed under a new key, deleted or marked resolved. Previous identity preferences are archived before activation and old Keystore keys remain.
 
-## What the gateway agent must know
+## Initial integration notes at fe562a6 (historical)
 
 1. The existing owner-session web status endpoint is not an Android recovery API. There is no implemented contract to resolve uncertain submissions using proof of the pending key. Such attempts remain blocked. Provide a nonce-bound, authenticated proof-of-key recovery contract with authoritative outcome and atomicity against in-flight registration; a bare `not found` is insufficient. The Android app must not infer rejection from expiry.
 2. Every new token needs a new challenge/key and **new exception fingerprint**. The earlier phone fingerprint is not a permanent device identifier. The prepared screen pauses before any server mutation so the operator can update the scoped exception.
@@ -19,7 +19,7 @@ A definitive rejection permits exact saved-request retry within expiry. Network 
 5. The shared Kotak SMS fixtures and preset from this gateway commit are included under Android test resources and tested with actual RE2/J. Test sender/package/signature identities are synthetic. No sender, package signer or notification rules were inferred from SMS content. These tests do not authorize a dual-source production rule.
 6. New staging device tests cover pause-before-submit, immutable retry after rejection, encrypted persistence, old-key/outbox preservation, expiry, unknown-outcome blocking, malformed responses, and explicit activation. They require the physical device; execution is pending because ADB currently has no connected phone.
 
-## Commands and verification
+## Initial verification at fe562a6 (historical)
 
 Android: `./gradlew :app:assembleDebug :app:assembleDebugAndroidTest :app:testDebugUnitTest :app:lintDebug` from `android-capture` with Android SDK 36 and compatible JDK.
 
@@ -180,3 +180,30 @@ Push the app fixes and update this handoff with commit, changed files, checks
 actually run, unresolved server dependencies, and whether a safe fresh preparation
 is ready. Exchange public fingerprints through the agreed handoff; keep QR tokens,
 private keys, signing stores, phone data, and raw bank messages out of Git.
+
+## App return handoff — review fixes executed on 27 October 2026
+
+Implementation commit: `85776a069564bafa9d804514742ad2a390a0dd81`. The review at `52dff7e` is implemented. The current state below supersedes the initial `fe562a6` notes.
+
+- `PairingContract.kt` validates canonical lowercase UUID + `status=offline` + `attestation_status=verified`. Incomplete/malformed 201 responses retain an uncertain attempt; activation revalidates its bound success receipt.
+- Durable version-2 receipts bind attempt ID, token hash, alias and DER SPKI fingerprint. General `capture.error` and old journal decisions never authorize recovery. Only explicit HTTP 422 attestation rejection tied to the known request permits safe retry/archival; unavailable tokens, occupied slots, revoked migration and already-registered keys remain uncertain.
+- `prepareFreshPairing()` guards the repository entry point in both builds, blocks paired/uncertain identities and unresolved staging attempts, and archives a resolved receipt/association before removing its pending alias. Keystore keys are retained. No manual resolution override was added.
+- `submitStagedPairing()` requires stopped capture and zero unresolved rows before network submission. This guard accounts for server-side revocation during migration; activation has the same guard.
+- `IdentityBarrier.kt` serializes capture/fault writes, backfill, drain, rules/heartbeat mutation, capture-session changes, activation and reset. Lock order: pairing mutex → identity barrier → staging mutex → database. Listeners take a generation ticket before scheduling work, so queued old callbacks cannot write using a new identity. In-flight inserts finish before activation can check pending rows. Two deterministic coroutine tests cover both ordering cases.
+- Activation archives the previous preference snapshot before committing a new identity. A crash after the identity commit is reconciled from the exact accepted receipt without overwriting that archive. A crash/cancellation during submission remains uncertain and blocks every replacement/reset path.
+- UI guidance and BACKEND-CONTRACT.md now describe implemented verification, the complete success contract, separate platform/patch requirements, and the missing pending-key recovery API accurately.
+
+### Checks actually run
+
+- Build, test APK assembly, **19 JVM tests**, and lint **0 errors / 30 warnings** passed with staging enabled and disabled.
+- Physical iQOO, staging enabled: **19 instrumentation tests passed**. Staging disabled: **8 tests passed**. Includes immutable-request retry, old evidence/key preservation, legacy receipt boundary/reset guards, complete-success negatives, cancellation/crash cases, pre-submission guards and both recovery screens.
+- The APK signer matched the existing installation; updates used in-place installation. The tested staging build is installed and opened. The temporary test APK was removed. Capture preference bytes remained identical before/after. No real pairing, bank messages, payment or evidence resolution was performed.
+- Installed staging APK SHA-256: `D1B6500C97B0E7A0C55EE5B0AB9CAD0C3CD8D474A9961E5E1F3DCFD248891FC5`. APKs and phone diagnostics remain local, outside Git.
+
+### Remaining gateway dependency and next action
+
+**This phone is not ready for fresh preparation:** its legacy pending attempt lacks trustworthy token/key-bound outcome provenance. It now remains blocked even though its old UI error says ATTESTATION_REJECTED. Do not clear it, mutate its local flags, use the browser status as proof, or generate a new QR to bypass it.
+
+The gateway agent must implement/finalize the owner-authorized, nonce-bound proof-of-pending-key recovery API described in the review, including atomic/fenced negative outcomes and old-token handling. Then the Android agent can integrate that contract and resolve this retained key safely. A genuinely fresh identity or a version-2 attempt with a definitive bound rejection can use prepare → fingerprint → submit now, subject to owner authorization and the current server policy. Physical hardware-attestation registration, tracked payment and overnight reliability remain separate acceptance work.
+
+Changed code: `core/{PairingContract,IdentityBarrier,StagingPairing,CaptureRepository,PairingFailure}.kt`, `MainActivity.kt`, `capture/Listeners.kt`, `sync/CaptureService.kt`; updated/added JVM and device tests, README, STAGING-PAIRING, BACKEND-CONTRACT and TEST-RESULTS. No gateway runtime files changed in this return patch.
