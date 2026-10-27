@@ -280,7 +280,7 @@ class GatewayCompletionTest extends TestCase
         app(DevicePairingService::class)->create($merchant, $owner, 2);
     }
 
-    public function test_approved_migration_revokes_old_key_only_when_replacement_pairs(): void
+    public function test_approved_migration_without_attestation_preserves_old_device_and_token(): void
     {
         $merchant = $this->merchant();
         $owner = User::factory()->create(['merchant_id' => $merchant->id, 'role' => 'owner']);
@@ -291,10 +291,12 @@ class GatewayCompletionTest extends TestCase
         [$pairing, $token] = app(DevicePairingService::class)->create($merchant, $owner, 1, $old->id);
         $this->assertNull($old->fresh()->revoked_at);
         $key = base64_encode(sodium_crypto_sign_publickey(sodium_crypto_sign_keypair()));
-        $this->postJson('/api/device/v1/pair', ['pairing_token' => $token, 'public_key' => $key])->assertCreated();
-        $this->assertNotNull($old->fresh()->revoked_at);
-        $this->postJson('/api/device/v1/pair', ['pairing_token' => $token, 'public_key' => $key])->assertStatus(422);
-        $this->assertDatabaseCount('devices', 2);
+        $this->postJson('/api/device/v1/pair', ['pairing_token' => $token, 'public_key' => $key])
+            ->assertStatus(422)->assertJsonPath('code', 'ATTESTATION_REQUIRED');
+        $this->assertNull($old->fresh()->revoked_at);
+        $this->assertNull($pairing->fresh()->consumed_at);
+        $this->assertSame('approved', $pairing->fresh()->approval_status);
+        $this->assertDatabaseCount('devices', 1);
     }
 
     private function merchant(): Merchant

@@ -7,6 +7,7 @@ use App\Domain\Orders\OrderEventService;
 use App\Domain\Reconciliation\ReconciliationService;
 use App\Models\Approval;
 use App\Models\AuditLog;
+use App\Models\Device;
 use App\Models\Dispute;
 use App\Models\EmailPaymentSignal;
 use App\Models\Order;
@@ -24,11 +25,15 @@ class OperationsController extends Controller
     public function admin()
     {
         return view('admin.operations', [
+            'deviceReviews' => Device::with('merchant')->whereNull('revoked_at')
+                ->where('attestation_status', '!=', 'verified')->latest('id')
+                ->paginate(25, ['*'], 'device_review_page')->withQueryString()->fragment('device-reviews'),
             'approvals' => Approval::with('merchant')->where('status', 'pending')->latest()->get(),
             'alerts' => DB::table('operational_alerts')->whereNull('resolved_at')->latest()->limit(100)->get(),
             'disputes' => Dispute::with('order.merchant')->whereNotNull('escalated_at')->where('status', 'open')->latest()->get(),
             'quarantine' => PaymentSignal::with('device.merchant')->whereIn('processing_status', ['needs_review', 'unmatched'])->latest()->limit(50)->get(),
             'rules' => ParserRule::latest('version')->get(),
+            'parserPreset' => request()->query('parser_preset') === 'kotak-sms' ? config('bank_parsers.kotak_sms') : [],
             'emailEvidence' => EmailPaymentSignal::with('merchant')->latest()->limit(30)->get(),
             'failedDeliveries' => WebhookDelivery::with('merchant')->whereNotNull('failed_at')->latest()->limit(30)->get(),
             'deviceFaults' => DB::table('device_fault_reports')->join('devices', 'devices.id', '=', 'device_fault_reports.device_id')->join('merchants', 'merchants.id', '=', 'devices.merchant_id')->orderByDesc('device_fault_reports.id')->limit(50)->get(['device_fault_reports.*', 'merchants.name as merchant_name']),
@@ -46,7 +51,17 @@ class OperationsController extends Controller
 
     public function parser(Request $request, AuditLogger $audit)
     {
-        $data = $request->validate(['version' => ['required', 'integer', 'min:1', 'unique:parser_rules,version'], 'sender_ids' => ['required', 'string', 'max:500'], 'notification_packages' => ['required', 'string', 'max:500'], 'amount_pattern' => ['required', 'string', 'max:500'], 'reference_pattern' => ['required', 'string', 'max:500']]);
+        $data = $request->validate([
+            'version' => ['required', 'integer', 'min:1', 'unique:parser_rules,version'],
+            'sender_ids' => ['required', 'string', 'max:500'],
+            'notification_packages' => ['required', 'string', 'max:500'],
+            'amount_pattern' => ['required', 'string', 'max:500'],
+            'reference_pattern' => ['required', 'string', 'max:500'],
+            'schema' => ['nullable', 'in:hx-credit-re2-v1'],
+            'credit_pattern' => ['required_if:schema,hx-credit-re2-v1', 'nullable', 'string', 'max:500'],
+            'reject_pattern' => ['required_if:schema,hx-credit-re2-v1', 'nullable', 'string', 'max:500'],
+            'notification_signing_sha256' => ['required_if:schema,hx-credit-re2-v1', 'nullable', 'json', 'max:10000'],
+        ]);
         $senders = preg_split('/[\s,]+/', trim($data['sender_ids']));
         foreach ($senders as $sender) {
             abort_unless(preg_match('/^[A-Z]{2}-KOTAKB(?:-[A-Z])?$/', $sender), 422, 'Invalid bank sender ID');
@@ -55,7 +70,20 @@ class OperationsController extends Controller
         foreach ($packages as $package) {
             abort_unless(preg_match('/^[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)+$/', $package), 422, 'Invalid Android package');
         }
-        $rule = ParserRule::create(['version' => $data['version'], 'source' => 'kotak', 'status' => 'draft', 'created_by' => $request->user()->id, 'rules' => ['sender_ids' => $senders, 'notification_packages' => $packages, 'amount_pattern' => $data['amount_pattern'], 'reference_pattern' => $data['reference_pattern']]]);
+        $rules = ['sender_ids' => $senders, 'notification_packages' => $packages, 'amount_pattern' => $data['amount_pattern'], 'reference_pattern' => $data['reference_pattern']];
+        if (($data['schema'] ?? null) === 'hx-credit-re2-v1') {
+            $certificates = json_decode($data['notification_signing_sha256'], true, flags: JSON_THROW_ON_ERROR);
+            abort_unless(is_array($certificates) && array_diff(array_keys($certificates), $packages) === [], 422, 'Signing identities must match the allowed bank packages');
+            foreach ($packages as $package) {
+                $digests = $certificates[$package] ?? null;
+                abort_unless(is_array($digests) && array_is_list($digests) && count($digests) >= 1 && count($digests) <= 8, 422, 'Each bank package needs verified signing digests');
+                foreach ($digests as $digest) {
+                    abort_unless(is_string($digest) && preg_match('/\A[a-f0-9]{64}\z/', $digest), 422, 'Bank signing digests must be lowercase SHA-256 hex');
+                }
+            }
+            $rules += ['schema' => $data['schema'], 'credit_pattern' => $data['credit_pattern'], 'reject_pattern' => $data['reject_pattern'], 'notification_signing_sha256' => $certificates];
+        }
+        $rule = ParserRule::create(['version' => $data['version'], 'source' => 'kotak', 'status' => 'draft', 'created_by' => $request->user()->id, 'rules' => $rules]);
         $audit->record('parser_rule.created', null, ParserRule::class, $rule->id);
 
         return back()->with('status', 'Parser version saved as draft. Validate against real samples before activating.');

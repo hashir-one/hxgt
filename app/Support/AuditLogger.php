@@ -15,7 +15,11 @@ final class AuditLogger
         ?string $reason = null,
         array $metadata = [],
         ?Request $request = null,
+        bool $includeRequestContext = true,
     ): AuditLog {
+        // Pairing audit hooks must not retain attacker-controlled headers or identifiers.
+        $includeRequestContext = $includeRequestContext && ! request()->is('api/device/v1/pair');
+
         return AuditLog::create([
             'actor_type' => auth()->check() ? 'user' : 'system',
             'actor_id' => auth()->id(),
@@ -24,8 +28,8 @@ final class AuditLogger
             'target_type' => $targetType,
             'target_id' => $targetId,
             'reason' => $reason,
-            'ip_address' => $request?->ip() ?? request()->ip(),
-            'user_agent' => $request?->userAgent() ?? request()->userAgent(),
+            'ip_address' => $includeRequestContext ? ($request?->ip() ?? request()->ip()) : null,
+            'user_agent' => $includeRequestContext ? ($request?->userAgent() ?? request()->userAgent()) : null,
             'metadata' => $metadata,
             'created_at' => now(),
         ]);

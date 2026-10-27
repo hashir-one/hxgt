@@ -59,10 +59,10 @@ Follow applicable `AGENTS.md` instructions. Do not inspect credential files, cop
 
 | Area | Current behavior | Work required |
 | --- | --- | --- |
-| Attestation | `AttestationVerifier::status()` returns `pending_review` for no chain and `submitted` for any supplied chain. It never returns `verified`. | Implement real server-side validation and key binding before live capture can work. |
-| Manual trust override | Admin device approval rejects with “Hardware attestation verification must be integrated…” | Keep it disabled; do not edit database trust flags on the live VPS. |
-| Pairing challenge | Existing QR carries a token and URL; server does not validate an attestation challenge. | Implement the proposed challenge binding in section 7, or agree and test a versioned alternative. |
-| Pairing result | Returns only device UUID and device status. | Persist that UUID; use heartbeat for status. Add a scoped capabilities endpoint if the app needs merchant identity/configuration. |
+| Attestation | Official Android verifier integrated with current Google roots/revocation, exact identity/key/challenge binding and hardware/boot/patch policy. Invalid evidence creates no device. | See `docs/ANDROID-ATTESTATION.md`; physical-phone acceptance remains required. |
+| Manual trust override | Admin device trust approval returns 422 | Keep it disabled; do not edit database trust flags on the live VPS. |
+| Pairing challenge | QR carries a token; server verifies the exact 32 raw bytes defined in section 7. | Generate a fresh key with that challenge before submitting the full chain. |
+| Pairing result | Returns device UUID, `status: offline`, and `attestation_status: verified` on success only. | Persist the UUID; healthy signed heartbeats are still required. |
 | Capture rules | Downloadable rules and source allowlists exist. | Validate real credit samples; define an Android-compatible extraction schema. Never invent the bank package name. |
 | Native collection dashboard | No signed device dashboard/collection endpoint exists. | Add a scoped read endpoint, or use an authenticated browser panel until implemented. Local capture totals are not confirmed collections. |
 | Native manual approvals | No native device approval/rejection API or owner authentication flow exists. | Implement owner authentication, fresh OTP and authorization server-side before native actions. Biometrics alone are insufficient. |
@@ -70,7 +70,7 @@ Follow applicable `AGENTS.md` instructions. Do not inspect credential files, cop
 | Re-attestation | No refresh/rotation contract exists. | Design and test it; a certificate from initial key generation is not fresh attestation. |
 | Background reliability | No Android implementation or hardware soak test exists. | Prove supported phone/OS combinations; never promise universal 24/7 execution. |
 
-**The APK alone cannot enable auto-confirmation against the current attestation stub.** The implementation agent must complete the backend trust work too, or deliver a concrete backend patch/specification and clearly identify the release dependency.
+**Backend attestation is implemented; physical iQOO verification is still unproven.** Follow `docs/ANDROID-ATTESTATION.md` for staging identity, patch policy, fresh owner-authorized pairing and preservation of unresolved phone outbox records.
 
 ## 4. Distinguish the three payment experiences
 
@@ -88,7 +88,7 @@ The existing bank-email path has a default ₹500 minimum and is not a substitut
 
 Use Kotlin, Jetpack Compose, coroutines/Flow, Room for the structured outbox, Android Keystore, and an HTTPS client supporting exact request bytes and certificate pinning. WorkManager is for deferred/retry work, not a 60-second periodic heartbeat. Keep dependencies minimal and pin compatible stable versions in a Gradle version catalog; check current official documentation rather than copying old version numbers.
 
-Suggested application ID: `in.hxdev.capture`. Treat this as a proposed ID until the release signer and server package allowlist are established. Separate debug and release package IDs, backends and signing identities. A practical starting support floor is Android 10 / API 29, subject to the actual dedicated phone and hardware-attestation checks; select current compile/target SDKs at implementation time. Do not lower target SDK to evade restrictions.
+Staging application ID: `in.hxdev.capture.debug`, with the explicitly configured signer in `docs/ANDROID-ATTESTATION.md`. Suggested release ID: `in.hxdev.capture`; production needs its own configured release signer. Separate debug and release package IDs, backends and signing identities. The server currently requires at least Android 13 / API 33 plus its explicit OS/vendor/boot patch policy; select current compile/target SDKs at implementation time. Do not lower target SDK to evade restrictions.
 
 Suggested package structure inside one Gradle `app` module:
 
@@ -190,13 +190,15 @@ Validate HTTPS, exact approved origin/path, no userinfo, unexpected port, fragme
 }
 ```
 
-Current validation: public key at most 8192 characters; chain at most eight strings, each at most 16384 characters; app version at most 32; label/model at most 80; Android version at most 20. The chain representation above is the **proposed leaf-first base64 DER convention**; the current stub does not parse or validate a representation. Implement and test this encoding on both sides before release.
+Current validation: public key at most 8192 characters; chain at most eight strings, each at most 16384 characters; app version at most 32; label/model at most 80; Android version at most 20. The chain is **leaf-first base64 DER including every intermediate and the official root**, 3–8 certificates. PEM certificates are also accepted. The two-entry example above is abbreviated; submit the full actual chain.
 
 Current success is HTTP 201:
 
 ```json
-{"device_id":"SERVER_ASSIGNED_UUID","status":"pending_review"}
+{"device_id":"SERVER_ASSIGNED_UUID","status":"offline","attestation_status":"verified"}
 ```
+
+Attestation failures return HTTP 422 (evidence/policy) or 503 (trust/configuration/runtime) with `error: ATTESTATION_REJECTED` and a bounded `code`. The app must display the code and recovery action; it must not silently remain on the scanner. `PATCH_POLICY` can additionally return `details` containing only `field` (`os_patch`, `vendor_patch`, `boot_patch`), `reason` (`MISSING`, `INVALID_FORMAT`, `INVALID_DATE`, `FUTURE`, `BELOW_MINIMUM`, `TOO_OLD`), optional `actual`, `minimum`, `max_age_months`, and `server_date`. Dates remain strings (`YYYYMM` or `YYYYMMDD`); these are policy diagnostics, never raw certificate identifiers. Keep the outbox and old/pending key aliases on any failure. Do not repeatedly submit an expired token. The owner Devices page now displays and polls the latest pairing status through a merchant-scoped, owner-only session endpoint; this is a web-panel endpoint, not an Android authentication API.
 
 Use the returned public UUID in `X-Device-ID`, never the numeric database ID. Missing/expired/consumed tokens return 422 `PAIRING_NOT_AVAILABLE`; slot, migration and key reuse may return other 422 errors. The route is throttled to 10/minute. Persist the key alias and pending attempt before the request. If the response is lost after server consumption, do not create a new key and loop: show recovery, and implement a proof-of-key recovery contract or require a fresh owner-approved pairing attempt.
 
@@ -204,19 +206,19 @@ Use the returned public UUID in `X-Device-ID`, never the numeric database ID. Mi
 
 Use a non-exportable Android Keystore **EC P-256** key, with `SHA256withECDSA`, and export its **SubjectPublicKeyInfo PEM public key**. This fits the server's existing PEM + `openssl_verify(..., OPENSSL_ALGO_SHA256)` path. Send the DER ECDSA signature returned by Java `Signature`, base64 encoded without line wrapping. Do not send raw `r || s`, a hex signature, or a private key.
 
-The server also supports raw base64 Ed25519 public keys with libsodium signatures, primarily exercised by current PHP tests. Do not mistake that branch for an instruction to store an exportable Ed25519 private key in preferences. Hardware Keystore interoperability must be proven with real Android-generated EC signatures.
+The signature middleware retains legacy Ed25519 support for existing devices, but **new pairings require attested EC P-256 PEM keys**. Do not mistake that branch for an instruction to store an exportable Ed25519 private key in preferences. Hardware Keystore interoperability must be proven with real Android-generated EC signatures.
 
 The capture signing key must allow unattended signing during an authorized capture session; requiring biometric authentication for every heartbeat would prevent background capture. Protect destructive local actions with user authentication separately. Pin key identity to one pairing and environment. Handle key invalidation as re-pair required, not silent key replacement.
 
-### Required backend attestation implementation — proposed protocol
+### Implemented backend attestation protocol
 
-A minimal challenge convention can reuse the existing high-entropy pairing token:
+The implemented challenge convention uses the existing high-entropy pairing token:
 
 ```text
 attestationChallenge = SHA256(UTF8("hx-pair-v1\n" + pairing_token))
 ```
 
-Use the 32 digest bytes as the Android key-generation attestation challenge. Server recomputes them from the presented, valid token. This convention is **not implemented today**; agree it in both codebases and add fixtures. Alternatively introduce a versioned challenge endpoint before key generation, with equivalent one-time binding.
+Use the 32 digest bytes as the Android key-generation attestation challenge. Server recomputes them from the presented, valid token. This convention is implemented. Do not send the 64 hexadecimal characters or base64 text as the challenge. A different token requires a new Keystore key and attestation chain.
 
 Server validation must verify the certificate path and revocation state against the current official Android trust roots, and confirm hardware-backed security. Include supported root rotations; do not freeze the trust set to a single historical root. Perform this on the backend, not merely in the APK. [Android attestation verification](https://developer.android.com/privacy-and-security/security-key-attestation).
 
@@ -224,7 +226,7 @@ Decode the attestation extension correctly. Check exact challenge, attested publ
 
 Only a successful verifier may return `verified`. Invalid, unsupported, unparseable, unavailable or stale trust evidence must remain unusable for payment capture, with an actionable reason. Never add a production `TRUST_ALL_DEVICES` toggle.
 
-Update `DeviceController::pair()` so trust verification occurs before a successful live binding or migration is committed. In particular, the current code can revoke a replacement's old device during pairing even though the new key is untrusted. Resolve this sequencing before shipping migration: do not revoke the working device because an invalid attestation merely reached the pairing endpoint.
+`DeviceController::pair()` now verifies before mutation and rechecks token validity/approval under transaction locks. Rejection preserves the previous device and token; successful migration revokes the old key and consumes the token atomically. No digest-only legacy device can be promoted.
 
 Add a lifecycle design for fresh re-attestation/key rotation. The key's original certificate challenge cannot simply be changed later. Specify proof of the existing key, fresh challenge, replacement attested key where needed, atomic server identity update, replay protection and queued-data behavior. Do not invent a current `/reattest` route; none exists.
 
@@ -343,7 +345,13 @@ Signed GET with empty body. HTTP 200 returns the newest active version:
 
 **Those sender/package/pattern values are schema examples, not validated production rules.** No active rule returns `{"version":null,"source":"kotak","rules":[]}`. The app must tolerate `rules` being an empty JSON array in that response rather than assuming an object.
 
-The current server stores arbitrary admin-entered extraction strings; it does not define PCRE versus Java regex syntax, capture-group semantics, credit/debit classifiers or sample-based validation. Before release, define a versioned portable schema (recommended: Java-compatible bounded patterns, named/numbered capture convention, explicit credit and exclusion classifiers) and validate it on both sides. Do not blindly compile server strings or strip delimiters and assume equivalence.
+The admin form supports `hx-credit-re2-v1` with delimiter-free RE2 patterns, `credit_pattern`, `reject_pattern`, and bank notification signing-digest allowlists. **Admin → Operations → Parser versions → Load Kotak SMS sample preset** loads the two credit-message formats supplied in the private reference file. The preset is defined in `config/bank_parsers.php`; sanitized fixtures are in `tests/Fixtures/KotakSms/credits.json`. No private payer/account/reference/link values are committed. Loading the preset only populates the form; saving creates a draft.
+
+For this preset, bound the SMS body to 2,048 characters, require the full credit pattern to match, and reject any reject-pattern match. Require exactly one amount match and one reference match, taking capture group 1 from each. Convert rupees/paise with integer arithmetic, reject zero or negative amounts, and preserve all 12 reference digits as a string, including leading zeros. Counterparty names/UPI IDs, account masks and the balance link are ignored and never uploaded. The amount extractor is anchored to the credit amount, so a balance value cannot replace it. Use the original SMS-provider occurrence timestamp; a date-only body does not supply a transaction time. Historical reference samples are test inputs, never new payment evidence.
+
+The preset uses the [supported RE2 syntax](https://github.com/google/re2/wiki/Syntax) without lookarounds/backreferences. PHP tests exercise the extraction contract and sanitized positive/negative cases; the Android implementation agent must also run these same fixtures through its actual RE2/J parser. This checkout contains no Android capture app source. Do not assume passing PHP pattern tests prove Android listener behavior.
+
+**The supplied samples establish SMS body formats only.** The exact SMS sender ID was not included. Do not infer it, the bank package or bank APK signer from the message body. Verify those identities on the phone. Notification body samples still need separate validation: the existing v1 schema shares patterns across SMS and notification sources, so do not activate the SMS-only preset as a proven dual-source rule. A message matching a regex does not by itself authorize payment confirmation.
 
 Use a safe last-known validated rule only while server acceptance still permits it. Signal ingestion checks that the submitted version is **active**, not merely known. If a version is deactivated, refresh; do not relabel old evidence as parsed by a different version. Plan explicit quarantine/reprocessing because raw source text is not kept in the outbox.
 

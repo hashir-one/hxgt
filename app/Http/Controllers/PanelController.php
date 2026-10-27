@@ -5,11 +5,13 @@ namespace App\Http\Controllers;
 use App\Domain\Devices\ApprovalService;
 use App\Domain\Devices\DevicePairingService;
 use App\Domain\Devices\GatewayHealthService;
+use App\Domain\Devices\PairingStatus;
 use App\Domain\Orders\ApiCredentialService;
 use App\Domain\Payments\PaymentMatchingService;
 use App\Domain\Webhooks\WebhookService;
 use App\Models\ApiCredential;
 use App\Models\Device;
+use App\Models\DevicePairing;
 use App\Models\Dispute;
 use App\Models\Order;
 use App\Models\OtpChallenge;
@@ -107,7 +109,22 @@ class PanelController extends Controller
 
         app(GatewayHealthService::class)->refreshDeviceStates($merchant);
 
-        return view('panel.devices', ['merchant' => $merchant, 'devices' => $merchant->devices()->latest()->get()]);
+        $latestPairing = auth()->user()->role === 'owner'
+            ? DevicePairing::where('merchant_id', $merchant->id)->latest('id')->first() : null;
+
+        return view('panel.devices', [
+            'merchant' => $merchant, 'devices' => $merchant->devices()->latest()->get(),
+            'latestPairing' => $latestPairing,
+            'pairingStatus' => $latestPairing ? app(PairingStatus::class)->forPairing($latestPairing) : null,
+        ]);
+    }
+
+    public function pairingStatus(Request $request, DevicePairing $pairing, PairingStatus $status)
+    {
+        abort_unless($request->user()->role === 'owner', 403);
+        abort_unless($pairing->merchant_id === $request->user()->merchant_id, 404);
+
+        return response()->json($status->forPairing($pairing));
     }
 
     public function developer()

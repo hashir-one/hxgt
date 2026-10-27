@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Device;
 
+use App\Domain\Devices\AttestationFailure;
 use App\Domain\Devices\AttestationVerifier;
 use App\Domain\Devices\GatewayHealthService;
 use App\Domain\Payments\PaymentMatchingService;
@@ -19,7 +20,7 @@ class DeviceController extends Controller
     public function pair(Request $request, AuditLogger $audit, AttestationVerifier $attestation)
     {
         $payload = $request->validate([
-            'pairing_token' => ['required', 'string'],
+            'pairing_token' => ['required', 'string', 'max:128'],
             'public_key' => ['required', 'string', 'max:8192'],
             'attestation_certificate_chain' => ['nullable', 'array', 'max:8'],
             'attestation_certificate_chain.*' => ['string', 'max:16384'],
@@ -40,27 +41,37 @@ class DeviceController extends Controller
             return response()->json(['error' => 'PAIRING_NOT_AVAILABLE'], 422);
         }
 
-        $rawKey = base64_decode($payload['public_key'], true);
-        $pemKey = str_contains($payload['public_key'], 'BEGIN PUBLIC KEY') ? openssl_pkey_get_public($payload['public_key']) : false;
-        abort_unless($pemKey !== false || ($rawKey !== false && strlen($rawKey) === SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES), 422, 'Invalid device public key');
-        $attestationStatus = $attestation->status($payload['attestation_certificate_chain'] ?? null);
+        try {
+            $verification = $attestation->verify($payload['attestation_certificate_chain'] ?? null, $payload['public_key'], $payload['pairing_token']);
+        } catch (AttestationFailure $failure) {
+            $audit->record('device.attestation_rejected', $pairing->merchant_id, DevicePairing::class, $pairing->id,
+                reason: $failure->failureCode, metadata: ['policy_version' => 'hx-pair-v1', 'details' => $failure->details], includeRequestContext: false);
+
+            return response()->json(array_merge(['error' => 'ATTESTATION_REJECTED', 'code' => $failure->failureCode],
+                $failure->details ? ['details' => $failure->details] : []), $failure->httpStatus);
+        }
+        $payload['public_key'] = $verification['public_key'];
+        $attestationStatus = 'verified';
         $attestationDigest = isset($payload['attestation_certificate_chain'])
             ? hash('sha256', json_encode($payload['attestation_certificate_chain'], JSON_THROW_ON_ERROR))
             : null;
 
-        $device = DB::transaction(function () use ($pairing, $payload, $attestationStatus, $attestationDigest): Device {
+        $device = DB::transaction(function () use ($pairing, $payload, $attestationStatus, $attestationDigest, $verification, $audit): Device {
             $merchant = Merchant::whereKey($pairing->merchant_id)->lockForUpdate()->firstOrFail();
             $pairing = DevicePairing::query()->lockForUpdate()->findOrFail($pairing->id);
-            if ($pairing->consumed_at !== null || $pairing->expires_at->isPast() || $pairing->approval_status !== 'approved') {
+            if ($pairing->consumed_at !== null || $pairing->expires_at->lte(now()) || $pairing->approval_status !== 'approved'
+                || ! hash_equals($pairing->token_hash, hash('sha256', $payload['pairing_token']))) {
                 abort(422, 'PAIRING_NOT_AVAILABLE');
             }
 
             abort_if($merchant->status !== 'active', 422, 'MERCHANT_SUSPENDED');
+            abort_if($verification['trust_valid_until'] <= now()->timestamp, 503, 'TRUST_STALE');
             if ($pairing->replaces_device_id) {
+                abort_unless($attestationStatus === 'verified', 422, 'MIGRATION_ATTESTATION_REQUIRED');
                 $old = Device::where('merchant_id', $merchant->id)->where('slot_number', $pairing->slot_number)->lockForUpdate()->findOrFail($pairing->replaces_device_id);
                 abort_if($old->revoked_at !== null, 422, 'MIGRATION_DEVICE_REVOKED');
                 $old->update(['revoked_at' => now(), 'status' => 'revoked']);
-                app(AuditLogger::class)->record('device.migrated', $merchant->id, Device::class, $old->id);
+                $audit->record('device.migrated', $merchant->id, Device::class, $old->id, includeRequestContext: false);
             }
             abort_if(
                 Device::query()
@@ -79,17 +90,21 @@ class DeviceController extends Controller
                 'label' => $payload['metadata']['label'] ?? null,
                 'public_key' => $payload['public_key'],
                 'attestation_status' => $attestationStatus,
+                'status' => 'offline',
                 'attestation_digest' => $attestationDigest,
-                'metadata' => array_merge($payload['metadata'] ?? [], ['app_version' => $payload['app_version'] ?? null]),
+                'metadata' => array_merge($payload['metadata'] ?? [], [
+                    'app_version' => $payload['app_version'] ?? null,
+                    'attestation' => $verification['evidence'],
+                ]),
             ]);
             $pairing->update(['consumed_at' => now(), 'approval_status' => 'consumed']);
+            $audit->record('device.paired', $device->merchant_id, Device::class, $device->id,
+                metadata: $verification['evidence'], includeRequestContext: false);
 
             return $device;
         });
 
-        $audit->record('device.paired', $device->merchant_id, Device::class, $device->id, metadata: ['device_id' => $device->public_id]);
-
-        return response()->json(['device_id' => $device->public_id, 'status' => $device->status], 201);
+        return response()->json(['device_id' => $device->public_id, 'status' => $device->status, 'attestation_status' => 'verified'], 201);
     }
 
     public function heartbeat(Request $request, GatewayHealthService $health)

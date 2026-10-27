@@ -1,6 +1,15 @@
 @extends('layouts.app')
 
 @section('content')
+@if($latestPairing)
+<section class="surface mb-6 rounded-2xl p-6" data-pairing-status-url="{{ route('panel.devices.pairing-status', $latestPairing) }}" data-pairing-poll="{{ $pairingStatus['poll'] ? 'true' : 'false' }}">
+    <h2 class="text-lg font-semibold">Latest pairing · Slot {{ $latestPairing->slot_number }}</h2>
+    <p class="mt-3 text-sm text-strong" data-pairing-message role="status" aria-live="polite">{{ $pairingStatus['message'] }}</p>
+    <p class="mt-2 font-mono text-sm text-warning" data-pairing-code>{{ $pairingStatus['code'] }}</p>
+    <p class="mt-2 text-sm text-muted" data-pairing-details>@foreach($pairingStatus['details'] as $key => $value){{ $key }}: {{ $value }}{{ $loop->last ? '' : ' · ' }}@endforeach</p>
+    <p class="mt-2 text-xs text-muted">QR expires {{ $latestPairing->expires_at->format('Y-m-d H:i:s') }} UTC. Keep the phone's existing data and unresolved outbox records.</p>
+</section>
+@endif
 <section class="surface mb-6 rounded-2xl p-6"><h2 class="text-lg font-semibold">Pairing security</h2><p class="mt-2 text-sm text-muted">Request an owner email code before generating a QR. Slots 2–4 need approval; migrations need two administrators.</p><form class="mt-4" method="post" action="{{ route('panel.devices.otp') }}">@csrf<button class="btn-secondary">Send pairing OTP</button></form><form class="mt-4 grid gap-3 sm:grid-cols-3" method="post" action="{{ route('panel.devices.approval') }}">@csrf<select class="field" name="type"><option value="additional_device">Additional device slot</option><option value="migration">Replace existing device</option></select><input class="field" type="number" name="target_id" required placeholder="Slot number or device record ID"><button class="btn-secondary">Request approval</button></form></section>
 @if(session('pairing_token'))
 <div class="surface mb-6 rounded-2xl p-5"><h2 class="font-semibold">Scan to pair</h2><div class="mt-4 w-fit bg-white p-3">{!! (new \Endroid\QrCode\Builder\Builder(writer: new \Endroid\QrCode\Writer\SvgWriter, data: json_encode(['url' => url('/api/device/v1/pair'), 'token' => session('pairing_token')]), size: 240))->build()->getString() !!}</div><p class="mt-3 text-sm text-muted">Single use. Expires {{ session('pairing_expires_at') }}.</p></div>

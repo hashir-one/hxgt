@@ -48,6 +48,7 @@ Route::middleware(['auth', RequireSecondFactor::class, MerchantPanelAccess::clas
     Route::put('/settings', [PanelController::class, 'updateSettings'])->name('settings.update');
     Route::get('/payments/export', [PanelController::class, 'exportPayments'])->name('payments.export');
     Route::get('/devices', [PanelController::class, 'devices'])->name('devices');
+    Route::get('/devices/pairings/{pairing}/status', [PanelController::class, 'pairingStatus'])->middleware('throttle:30,1')->name('devices.pairing-status');
     Route::post('/devices/otp', [PanelController::class, 'pairingOtp'])->middleware('throttle:3,5')->name('devices.otp');
     Route::post('/devices/approval', [PanelController::class, 'requestDeviceApproval'])->name('devices.approval');
     Route::post('/devices/pair', [PanelController::class, 'createPairing'])->name('devices.pair');
