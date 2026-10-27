@@ -48,8 +48,11 @@ class CaptureService : Service() {
         if (repository.device() == null || !repository.prefs.getBoolean("consent", false)) { stopSelf(); return START_NOT_STICKY }
         startForeground(1, Notices.ongoing(this))
         started = true
-        repository.sessionRunning = true
+        val ticket = repository.captureTicket()
         scope.launch {
+            repository.setCaptureSession(true, ticket)
+            if (!repository.sessionRunning) { stopSelf(); return@launch }
+            launch {
             while (isActive) {
                 val began = SystemClock.elapsedRealtime()
                 try { repository.heartbeat() }
@@ -57,27 +60,27 @@ class CaptureService : Service() {
                 delay((60000 - (SystemClock.elapsedRealtime() - began)).coerceAtLeast(1000))
             }
         }
-        scope.launch {
+        launch {
             while (isActive) {
                 try { repository.refreshRules(); repository.backfill(); repository.maintenance() }
                 catch (e: Exception) { if (e is CancellationException) throw e; repository.error("SYNC_NEEDS_ATTENTION") }
                 delay(300000)
             }
         }
-        scope.launch {
+        launch {
             while (isActive) {
                 try { repository.drain(); repository.refreshHealth() }
                 catch (e: Exception) { if (e is CancellationException) throw e; repository.error("UPLOAD_NEEDS_ATTENTION") }
                 delay(5000)
             }
         }
-        DrainWorker.schedule(this)
+        DrainWorker.schedule(this@CaptureService)
+        }
         return START_NOT_STICKY
     }
     override fun onDestroy() {
-        repository.sessionRunning = false
         scope.cancel()
-        repository.scope.launch { repository.refreshHealth() }
+        repository.scope.launch { repository.setCaptureSession(false); repository.refreshHealth() }
         super.onDestroy()
     }
     override fun onTimeout(startId: Int, fgsType: Int) { repository.error("ANDROID_SESSION_TIMEOUT"); stopSelf() }

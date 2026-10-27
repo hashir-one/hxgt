@@ -25,12 +25,6 @@ class StagingPairing(
     private val now: () -> Instant = { Instant.now() }
 ) {
     private val mutex = Mutex()
-    private val definitiveRejections = setOf(
-        "ATTESTATION_REJECTED", "ATTESTATION_REQUIRED", "ATTESTATION_POLICY_NOT_CONFIGURED",
-        "ATTESTATION_CHALLENGE_MISMATCH", "ATTESTATION_APP_ID_MISMATCH", "ATTESTATION_SIGNER_MISMATCH",
-        "ATTESTATION_UNAVAILABLE", "PAIRING_NOT_AVAILABLE", "DEVICE_SLOT_IN_USE",
-        "MERCHANT_SUSPENDED", "MIGRATION_ATTESTATION_REQUIRED", "MIGRATION_DEVICE_REVOKED"
-    )
     private fun gate() { check(BuildConfig.DEBUG && BuildConfig.STAGING_PAIRING) { "STAGING_ONLY" } }
     private fun journal(): JSONObject = prefs.getString("journal", null)?.let {
         JSONObject(vault.decrypt(it, "staging-pairing-journal-v1"))
@@ -50,6 +44,10 @@ class StagingPairing(
         return Protocol.sha256(chain.first().publicKey.encoded) to vault.publicPem(alias)
     }
     private fun requireLegacyResolved(journal: JSONObject) {
+        // Recheck even an older journal's cached resolution: capture.error was never a receipt.
+        if (identity.getString("device", null) == null) {
+            check(PairingContract.legacyResolved(identity, vault)) { "PAIRING_OUTCOME_UNCERTAIN" }
+        }
         val currentBinding = binding()
         val savedBinding = journal.optString("identity_binding")
         if (savedBinding.isNotEmpty()) {
@@ -59,14 +57,9 @@ class StagingPairing(
         val alias = identity.getString("alias", null)
         val device = identity.getString("device", null)
         if (alias != null && device == null) {
-            // A legacy sending state is uncertain unless a specific rejection was actually saved.
-            val reason = identity.getString("error", "").orEmpty()
-            check(identity.getString("pair_state", "") == "sending" && reason in definitiveRejections) {
-                "PAIRING_OUTCOME_UNCERTAIN"
-            }
             journal.put("legacy_resolution", JSONObject().put("alias", alias)
                 .put("fingerprint", publicMaterial(alias).first).put("outcome", "rejected")
-                .put("reason", reason).put("recorded_at", now().toString()))
+                .put("receipt", identity.getString("pair_receipt", null)).put("recorded_at", now().toString()))
         }
         journal.put("identity_binding", currentBinding)
         // Public identity history is preserved, including the prior key alias.
@@ -75,8 +68,13 @@ class StagingPairing(
     }
     fun view(): StagingPairingView? {
         gate()
-        val attempt = latest(journal()) ?: return null
-        val storedState = attempt.getString("state")
+        val journal = journal()
+        val attempt = latest(journal)
+        if (attempt == null) {
+            return if (identity.getString("device", null) == null && !PairingContract.legacyResolved(identity, vault))
+                StagingPairingView("uncertain", error = "PAIRING_OUTCOME_UNCERTAIN") else null
+        }
+        val storedState = safeState(attempt)
         val state = when {
             storedState == "submitting" -> "uncertain"
             storedState in setOf("prepared", "rejected") && !now().isBefore(Instant.parse(attempt.getString("expires_at"))) -> "expired"
@@ -90,7 +88,7 @@ class StagingPairing(
         val journal = journal()
         requireLegacyResolved(journal)
         latest(journal)?.let {
-            check(it.getString("state") !in setOf("submitting", "uncertain", "accepted")) { "PAIRING_OUTCOME_UNCERTAIN" }
+            check(safeState(it) !in setOf("submitting", "uncertain", "accepted")) { "PAIRING_OUTCOME_UNCERTAIN" }
         }
         val token = try { Protocol.pairingToken(input, BuildConfig.GATEWAY_ORIGIN) }
             catch (_: Exception) { throw PairingFailure("INVALID_PAIRING_QR") }
@@ -103,7 +101,7 @@ class StagingPairing(
         val attempts = journal.getJSONArray("attempts")
         check((0 until attempts.length()).none { attempts.getJSONObject(it).optString("token_hash") == tokenHash }) { "PAIRING_USE_EXISTING_ATTEMPT" }
         val alias = "hx-staging-${UUID.randomUUID()}"
-        val attempt = JSONObject().put("alias", alias).put("state", "creating")
+        val attempt = JSONObject().put("version", 2).put("attempt_id", UUID.randomUUID().toString()).put("alias", alias).put("state", "creating")
             .put("expires_at", expiry.toString()).put("token_hash", tokenHash).put("created_at", now().toString())
         attempts.put(attempt)
         save(journal) // Persist alias before key generation; never overwrite an earlier attempt.
@@ -117,6 +115,7 @@ class StagingPairing(
                     .put("model", android.os.Build.MODEL.take(80)).put("android_version", android.os.Build.VERSION.RELEASE.take(20)))
             attempt.put("fingerprint", material.first).put("public_key", material.second)
                 .put("request", body.toString()).put("state", "prepared")
+                .put("receipt", PairingContract.receipt(attempt, "not_submitted"))
             save(journal)
         } catch (failure: Exception) {
             // Retain alias and any generated key. Nothing has been sent.
@@ -131,14 +130,14 @@ class StagingPairing(
         val journal = journal()
         requireLegacyResolved(journal)
         val attempt = checkNotNull(latest(journal)) { "PAIRING_NOT_PREPARED" }
-        check(attempt.getString("state") in setOf("prepared", "rejected")) { "PAIRING_OUTCOME_UNCERTAIN" }
+        check(safeState(attempt) in setOf("prepared", "rejected")) { "PAIRING_OUTCOME_UNCERTAIN" }
         if (!now().isBefore(Instant.parse(attempt.getString("expires_at")))) {
             attempt.put("state", "expired"); save(journal)
             throw PairingFailure("PAIRING_EXPIRED")
         }
         check(publicMaterial(attempt.getString("alias")).first == attempt.getString("fingerprint")) { "PENDING_KEY_UNAVAILABLE" }
         val body = attempt.getString("request")
-        attempt.put("state", "submitting"); save(journal)
+        attempt.put("state", "submitting").put("receipt", PairingContract.receipt(attempt, "uncertain")); save(journal)
         // A process death/cancellation from here leaves an uncertain submission. Never blindly retry.
         val result = try { api.request("POST", "/api/device/v1/pair", body.toByteArray(Charsets.UTF_8)) }
         catch (cancelled: CancellationException) { throw cancelled }
@@ -147,17 +146,19 @@ class StagingPairing(
             throw PairingFailure("PAIRING_OUTCOME_UNCERTAIN")
         }
         if (result.code == 201) {
-            val id = runCatching { UUID.fromString(result.json.getString("device_id")).toString() }.getOrNull()
+            val id = PairingContract.verifiedId(result.json)
             if (id != null) {
-                attempt.put("state", "accepted").put("device_id", id).put("error", ""); save(journal)
+                attempt.put("state", "accepted").put("device_id", id).put("error", "")
+                    .put("receipt", PairingContract.receipt(attempt, "accepted", result.json)); save(journal)
                 return@withLock
             }
         }
         val code = PairingFeedback.responseCode(result.code, result.json)
-        val rejected = result.code in 400..499 && code in definitiveRejections
+        val rejected = PairingContract.definitiveRejection(result.code, result.json)
         attempt.put("state", if (rejected) "rejected" else "uncertain")
             .put("error", if (rejected) code else "PAIRING_OUTCOME_UNCERTAIN")
             .put("detail", PairingFeedback.safeDetail(result.json))
+            .put("receipt", PairingContract.receipt(attempt, if (rejected) "rejected" else "uncertain"))
         save(journal)
         throw PairingFailure(attempt.getString("error"), attempt.optString("detail"))
     }
@@ -166,7 +167,7 @@ class StagingPairing(
         gate()
         val journal = journal()
         val attempt = checkNotNull(latest(journal))
-        check(attempt.getString("state") == "accepted") { "PAIRING_NOT_ACCEPTED" }
+        check(safeState(attempt) == "accepted") { "PAIRING_NOT_ACCEPTED" }
         check(publicMaterial(attempt.getString("alias")).first == attempt.getString("fingerprint"))
         // Recover a crash after the atomic identity commit but before journaling activation.
         if (identity.getString("device", null) == attempt.getString("device_id") &&
@@ -183,4 +184,20 @@ class StagingPairing(
         journal.put("identity_binding", binding())
         save(journal)
     }
+
+    private fun safeState(attempt: JSONObject): String {
+        if (attempt.optInt("version") != 2) return "uncertain"
+        val state = attempt.getString("state")
+        val receipt = attempt.optJSONObject("receipt")
+        return when (state) {
+            "prepared" -> if (PairingContract.bound(attempt, receipt, "not_submitted")) state else "uncertain"
+            "rejected" -> if (PairingContract.bound(attempt, receipt, "rejected")) state else "uncertain"
+            "expired" -> if (PairingContract.bound(attempt, receipt, "not_submitted") || PairingContract.bound(attempt, receipt, "rejected")) state else "uncertain"
+            "accepted", "activated" -> if (PairingContract.bound(attempt, receipt, "accepted") && PairingContract.verifiedId(receipt!!) == attempt.optString("device_id")) state else "uncertain"
+            "creating", "preparation_failed" -> state // Never sent by this implementation.
+            else -> "uncertain"
+        }
+    }
+
+    fun blocksLegacyTransition(): Boolean = latest(journal())?.let { safeState(it) != "activated" } ?: false
 }

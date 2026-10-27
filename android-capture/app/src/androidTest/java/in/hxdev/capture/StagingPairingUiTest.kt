@@ -13,7 +13,8 @@ class StagingPairingUiTest {
     @Test fun setupExposesPreparationWithoutSubmittingOrResettingIdentity() {
         assumeTrue(BuildConfig.STAGING_PAIRING)
         val app = compose.activity.application as CaptureApp
-        assumeTrue(app.repository.staging.view() == null)
+        val state = app.repository.staging.view()?.state
+        assumeTrue(state == null || state == "uncertain")
         val before = app.repository.prefs.all.toMap()
         val descriptor = InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(
             "am start -W -f 0x00020000 -n in.hxdev.capture.debug/in.hxdev.capture.MainActivity")
@@ -22,7 +23,10 @@ class StagingPairingUiTest {
         compose.waitUntil(10000) { runCatching { compose.onAllNodesWithText("HX PAY").fetchSemanticsNodes().isNotEmpty() }.getOrDefault(false) }
         compose.onNodeWithText("Setup").performClick()
         compose.onNodeWithText("Staging pairing · prepare, review, submit").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("Prepare key & show fingerprint").performScrollTo().assertIsNotEnabled()
+        if (state == "uncertain") {
+            compose.onNodeWithText("Submission outcome unknown. Ask the operator to check this fingerprint on the server. Retry and replacement are blocked; expiry does not prove rejection.").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithText("Prepare key & show fingerprint").assertDoesNotExist()
+        } else compose.onNodeWithText("Prepare key & show fingerprint").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithText("Submit this saved pairing").assertDoesNotExist()
         compose.onNodeWithText("Prepare a new pairing").assertDoesNotExist()
         org.junit.Assert.assertEquals(before, app.repository.prefs.all)

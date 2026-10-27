@@ -19,6 +19,7 @@ class SmsReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
         val repository = (context.applicationContext as CaptureApp).repository
+        val ticket = repository.captureTicket()
         if (!repository.captureAllowed()) return
         val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent)
         val pending = goAsync()
@@ -26,7 +27,7 @@ class SmsReceiver : BroadcastReceiver() {
             try {
                 withTimeout(7000) {
                     messages.groupBy { Pair(it.originatingAddress, it.timestampMillis) }.forEach { (key, parts) ->
-                        key.first?.let { repository.capture("sms", it, parts.joinToString("") { p -> p.messageBody.orEmpty() }, key.second) }
+                        key.first?.let { repository.capture("sms", it, parts.joinToString("") { p -> p.messageBody.orEmpty() }, key.second, ticket = ticket) }
                     }
                 }
             } catch (_: Exception) { repository.error("SMS_CAPTURE_INTERRUPTED") }
@@ -49,6 +50,7 @@ class BankNotifications : NotificationListenerService() {
     }
     override fun onDestroy() { repository.listenerConnected = false; super.onDestroy() }
     override fun onNotificationPosted(sbn: StatusBarNotification) {
+        val ticket = repository.captureTicket()
         if (!repository.captureAllowed() || sbn.notification.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
         val rule = repository.currentRules() ?: return
         if (sbn.packageName !in rule.packages) return
@@ -59,7 +61,7 @@ class BankNotifications : NotificationListenerService() {
             extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString() ?: extras.getCharSequence(Notification.EXTRA_TEXT)?.toString(),
             extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)?.joinToString("\n")).distinct().joinToString("\n")
         repository.scope.launch {
-            try { repository.capture("notification", sbn.packageName, text, sbn.postTime, sbn.key) }
+            try { repository.capture("notification", sbn.packageName, text, sbn.postTime, sbn.key, ticket) }
             catch (_: Exception) { repository.error("NOTIFICATION_CAPTURE_INTERRUPTED") }
         }
     }

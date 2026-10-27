@@ -42,11 +42,15 @@ class CaptureRepository(private val context: Context, private val database: Capt
     val activity = dao.observe()
     private val mutableHealth = MutableStateFlow(Health())
     val health = mutableHealth.asStateFlow()
-    private val uploadMutex = Mutex()
+    private val identityBarrier = IdentityBarrier()
     private val pairMutex = Mutex()
-    private val backfillMutex = Mutex()
-    @Volatile var listenerConnected = false
+        @Volatile var listenerConnected = false
     @Volatile var sessionRunning = false
+        private set
+    fun captureTicket() = identityBarrier.ticket()
+    suspend fun setCaptureSession(running: Boolean, ticket: Long = captureTicket()) = identityBarrier.current(ticket) {
+        sessionRunning = running && device() != null && prefs.getBoolean("consent", false)
+    }
     @Volatile private var rules: Rules? = null
     private var lastHeartbeatElapsed = 0L
     private var gatewayOpen = false
@@ -91,35 +95,46 @@ class CaptureRepository(private val context: Context, private val database: Capt
             if (BuildConfig.STAGING_PAIRING) runCatching { staging.view() }.getOrElse { StagingPairingView("storage_unavailable") } else null)
     }
     suspend fun prepareStagedPairing(input: String, expiresAt: String) = pairMutex.withLock {
-        try { staging.prepare(input, expiresAt) } finally { refreshHealth() }
+        identityBarrier.run { try { staging.prepare(input, expiresAt) } finally { refreshHealth() } }
     }
     suspend fun submitStagedPairing() = pairMutex.withLock {
-        try { staging.submit() } finally { refreshHealth() }
+        identityBarrier.run {
+            // Registration can revoke the old server key before local activation.
+            check(!sessionRunning) { "CAPTURE_MUST_BE_STOPPED" }
+            check(dao.pending() == 0) { "PENDING_EVIDENCE_MUST_BE_RESOLVED" }
+            try { staging.submit() } finally { refreshHealth() }
+        }
     }
     suspend fun activateStagedPairing() = pairMutex.withLock {
-        uploadMutex.withLock {
+        identityBarrier.run {
             check(!sessionRunning) { "CAPTURE_MUST_BE_STOPPED" }
             check(dao.pending() == 0) { "PENDING_EVIDENCE_MUST_BE_RESOLVED" }
             staging.activate { id, key ->
+                identityBarrier.changed()
                 check(prefs.edit().putString("device", id).putString("alias", key).putString("pair_state", "paired")
                     .putLong("paired_at", System.currentTimeMillis()).remove("rules").remove("sms_cursor")
                     .remove("last_heartbeat").remove("last_alert").putBoolean("backfill_complete", false)
                     .putBoolean("identity_blocked", false).putString("error", "").commit()) { "STORAGE_UNAVAILABLE" }
             }
-            rules = null; trust = "pending_review"; gatewayOpen = false; lastHeartbeatElapsed = 0
+            rules = null; trust = "offline"; gatewayOpen = false; lastHeartbeatElapsed = 0
             refreshHealth()
         }
     }
-    suspend fun pair(input: String) = pairMutex.withLock {
+    suspend fun pair(input: String) = pairMutex.withLock { identityBarrier.run {
+        check(!staging.blocksLegacyTransition()) { "PAIRING_OUTCOME_UNCERTAIN" }
         if (!api.configured) failPairing("TLS_CONFIGURATION_REQUIRED")
         if (device() != null || alias() != null) failPairing("PAIRING_RECOVERY_REQUIRED")
         val token = try { Protocol.pairingToken(input, BuildConfig.GATEWAY_ORIGIN) }
             catch (_: Exception) { failPairing("INVALID_PAIRING_QR") }
         val newAlias = "hx-device-${UUID.randomUUID()}"
+        val attempt = JSONObject().put("attempt_id", UUID.randomUUID().toString()).put("alias", newAlias)
+            .put("token_hash", Protocol.sha256(token.toByteArray())).put("version", 2)
         if (!prefs.edit().putString("alias", newAlias).putString("pair_state", "preparing").commit()) failPairing("STORAGE_UNAVAILABLE")
         // The alias is persisted first: a lost response must never silently generate a second key.
         try { vault.generate(newAlias, token) } catch (_: Exception) { failPairing("HARDWARE_ATTESTATION_UNAVAILABLE") }
-        if (!prefs.edit().putString("pair_state", "sending").commit()) failPairing("STORAGE_UNAVAILABLE")
+        attempt.put("fingerprint", Protocol.sha256(java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.getCertificate(newAlias).publicKey.encoded))
+        attempt.put("receipt", PairingContract.receipt(attempt, "uncertain"))
+        savePairReceipt(attempt, "sending")
         val body = JSONObject().put("pairing_token", token).put("public_key", vault.publicPem(newAlias))
             .put("attestation_certificate_chain", JSONArray(vault.chain(newAlias)))
             .put("app_version", BuildConfig.VERSION_NAME)
@@ -127,13 +142,23 @@ class CaptureRepository(private val context: Context, private val database: Capt
         val result = try { api.request("POST", "/api/device/v1/pair", body.toString().toByteArray(Charsets.UTF_8)) }
             catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { failPairing("PAIRING_CONNECTION_FAILED") }
-        if (result.code != 201) failPairing(PairingFeedback.responseCode(result.code, result.json))
-        val id = try { UUID.fromString(result.json.getString("device_id")).toString() }
-            catch (_: Exception) { failPairing("PAIRING_RESPONSE_INVALID") }
+        if (result.code != 201) {
+            attempt.put("receipt", PairingContract.receipt(attempt, if (PairingContract.definitiveRejection(result.code, result.json)) "rejected" else "uncertain"))
+            savePairReceipt(attempt, "sending")
+            failPairing(PairingFeedback.responseCode(result.code, result.json))
+        }
+        val id = PairingContract.verifiedId(result.json) ?: failPairing("PAIRING_RESPONSE_INVALID")
+        attempt.put("receipt", PairingContract.receipt(attempt, "accepted", result.json))
+        savePairReceipt(attempt, "sending")
+        identityBarrier.changed()
         if (!prefs.edit().putString("device", id).putString("pair_state", "paired").putLong("paired_at", System.currentTimeMillis()).putString("error", "").commit()) failPairing("STORAGE_UNAVAILABLE")
-        trust = "pending_review"
-        refreshRules()
+        trust = "offline"
+        refreshRulesLocked()
         refreshHealth()
+    } }
+    private fun savePairReceipt(attempt: JSONObject, state: String) {
+        check(prefs.edit().putString("pair_receipt", vault.encrypt(attempt.toString(), "legacy-pair-receipt-v2"))
+            .putString("pair_state", state).commit()) { "STORAGE_UNAVAILABLE" }
     }
     private fun failPairing(code: String): Nothing {
         // Only bounded local/allowlisted codes are logged, never QR tokens or response bodies.
@@ -141,7 +166,8 @@ class CaptureRepository(private val context: Context, private val database: Capt
         error(code)
         throw PairingFailure(code)
     }
-    suspend fun refreshRules() {
+    suspend fun refreshRules() = identityBarrier.run { refreshRulesLocked() }
+    private suspend fun refreshRulesLocked() {
         if (device() == null || !api.configured) return
         val response = signed("GET", "/api/device/v1/parser-rules")
         if (response.code != 200) { rules = null; error("RULES_HTTP_${response.code}"); return }
@@ -157,7 +183,8 @@ class CaptureRepository(private val context: Context, private val database: Capt
         }
     }
     private suspend fun signed(method: String, path: String, body: String = ""): ApiResult = api.request(method, path, body.toByteArray(Charsets.UTF_8), device(), alias())
-    suspend fun heartbeat() {
+    suspend fun heartbeat() = identityBarrier.run { heartbeatLocked() }
+    private suspend fun heartbeatLocked() {
         if (device() == null || !api.configured) return
         refreshHealth()
         val h = health.value
@@ -186,12 +213,15 @@ class CaptureRepository(private val context: Context, private val database: Capt
         }
         refreshHealth()
     }
-    suspend fun capture(source: String, identity: String, text: String, occurred: Long, notificationKey: String? = null) {
+    suspend fun capture(source: String, identity: String, text: String, occurred: Long, notificationKey: String? = null, ticket: Long = captureTicket()) = identityBarrier.current(ticket) {
+        captureLocked(source, identity, text, occurred, notificationKey)
+    }
+    private suspend fun captureLocked(source: String, identity: String, text: String, occurred: Long, notificationKey: String? = null) {
         if (!captureAllowed()) return
         val activeRules = rules ?: return
         val parser = CreditParser(activeRules)
         val credit = parser.parse(source, identity, text) ?: run {
-            if (parser.candidate(source, identity, text)) { fault("parser_failure", source); error("PARSER_FAILURE_$source") }
+            if (parser.candidate(source, identity, text)) { faultLocked("parser_failure", source); error("PARSER_FAILURE_$source") }
             return
         }
         val boundDevice = device() ?: return
@@ -218,7 +248,9 @@ class CaptureRepository(private val context: Context, private val database: Capt
             throw e // Backfill cursor must not advance when persistence failed.
         }
     }
-    suspend fun fault(type: String, source: String) {
+    suspend fun fault(type: String, source: String, ticket: Long = captureTicket()) = identityBarrier.current(ticket) { faultLocked(type, source) }
+    private suspend fun faultLocked(type: String, source: String) {
+        if (!captureAllowed()) return
         require(type in setOf("parser_failure", "upload_error", "sync_error") && source in setOf("sms", "notification", "device"))
         val device = device() ?: return
         val episode = System.currentTimeMillis() / 3600000
@@ -229,13 +261,13 @@ class CaptureRepository(private val context: Context, private val database: Capt
         dao.insert(Envelope(id, device, fingerprint, "fault", source, vault.encrypt(payload.toString(), "$device:$id"), System.currentTimeMillis()))
         DrainWorker.schedule(context)
     }
-    suspend fun drain(): Boolean = uploadMutex.withLock {
-        val boundDevice = device() ?: return@withLock false
-        if (!api.configured || prefs.getBoolean("identity_blocked", false)) return@withLock false
+    suspend fun drain(): Boolean = identityBarrier.run {
+        val boundDevice = device() ?: return@run false
+        if (!api.configured || prefs.getBoolean("identity_blocked", false)) return@run false
         repeat(50) {
-            val item = dao.next(boundDevice, System.currentTimeMillis()) ?: return@withLock dao.retryable(boundDevice) > 0
+            val item = dao.next(boundDevice, System.currentTimeMillis()) ?: return@run dao.retryable(boundDevice) > 0
             val plain = try { vault.decrypt(item.encryptedPayload, "$boundDevice:${item.id}") } catch (_: Exception) {
-                dao.update(item.copy(state = "blocked", errorCode = "KEY_OR_QUEUE_UNREADABLE")); error("KEY_OR_QUEUE_UNREADABLE"); return@withLock false
+                dao.update(item.copy(state = "blocked", errorCode = "KEY_OR_QUEUE_UNREADABLE")); error("KEY_OR_QUEUE_UNREADABLE"); return@run false
             }
             val result = try {
                 signed("POST", if (item.kind == "signal") "/api/device/v1/signals" else "/api/device/v1/faults",
@@ -253,30 +285,30 @@ class CaptureRepository(private val context: Context, private val database: Capt
                     dao.update(item.copy(state = "blocked", attempts = item.attempts + 1, errorCode = if (result.code in 200..299) "EVIDENCE_REJECTED" else "HTTP_${result.code}"))
                     if (result.code in setOf(401, 403)) { prefs.edit().putBoolean("identity_blocked", true).apply(); gatewayOpen = false }
                     error("UPLOAD_HTTP_${result.code}")
-                    return@withLock false
+                    return@run false
                 }
                 DeliveryAction.RETRY -> {
                     val delay = maxOf(result.retryAfter ?: 0, DeliveryPolicy.delayMillis(item.attempts, kotlin.random.Random.nextDouble()))
                     dao.update(item.copy(attempts = item.attempts + 1, nextAttempt = System.currentTimeMillis() + delay, errorCode = "HTTP_${result.code}"))
                     error("UPLOAD_RETRY_PENDING")
-                    return@withLock true
+                    return@run true
                 }
             }
         }
         dao.retryable(boundDevice) > 0
     }
-    suspend fun maintenance() { dao.prune(System.currentTimeMillis() - 7 * 86400000L); refreshHealth() }
-    suspend fun recover() {
+    suspend fun maintenance() = identityBarrier.run { dao.prune(System.currentTimeMillis() - 7 * 86400000L); refreshHealth() }
+    suspend fun recover() = identityBarrier.run {
         prefs.edit().putBoolean("identity_blocked", false).putString("error", "").apply()
         // A storage/key failure requires operator recovery, not a UI flag reset.
         check(!prefs.getBoolean("storage_issue", false)) { "STORAGE_REQUIRES_OPERATOR_RECOVERY" }
-        refreshRules()
-        heartbeat()
+        refreshRulesLocked()
+        heartbeatLocked()
         if (!prefs.getBoolean("identity_blocked", false)) { dao.retryBlocked(); DrainWorker.schedule(context) }
         refreshHealth()
     }
-    suspend fun backfill() = backfillMutex.withLock {
-        if (!captureAllowed() || rules == null || !allowed(Manifest.permission.READ_SMS)) return@withLock
+    suspend fun backfill() = identityBarrier.run {
+        if (!captureAllowed() || rules == null || !allowed(Manifest.permission.READ_SMS)) return@run
         val cutoff = prefs.getLong("paired_at", System.currentTimeMillis())
         val watermark = prefs.getLong("sms_cursor", cutoff)
         val until = System.currentTimeMillis()
@@ -286,24 +318,28 @@ class CaptureRepository(private val context: Context, private val database: Capt
         context.contentResolver.query(android.provider.Telephony.Sms.Inbox.CONTENT_URI,
             arrayOf("address", "body", "date", "date_sent"), selection, args.toTypedArray(), "date ASC, _id ASC")?.use { cursor ->
             while (cursor.moveToNext()) {
-                if (!captureAllowed() || rules == null) return@withLock
+                if (!captureAllowed() || rules == null) return@run
                 val occurred = cursor.getLong(3).takeIf { it > 0 } ?: cursor.getLong(2)
-                capture("sms", cursor.getString(0), cursor.getString(1).orEmpty(), occurred)
+                captureLocked("sms", cursor.getString(0), cursor.getString(1).orEmpty(), occurred)
             }
             prefs.edit().putLong("sms_cursor", until).putBoolean("backfill_complete", true).commit()
         }
         refreshHealth()
     }
-    suspend fun prepareFreshPairing() = pairMutex.withLock {
+    suspend fun prepareFreshPairing() = pairMutex.withLock { identityBarrier.run {
+        check(!staging.blocksLegacyTransition()) { "PAIRING_OUTCOME_UNCERTAIN" }
+        check(device() == null && PairingContract.legacyResolved(prefs, vault)) { "PAIRING_OUTCOME_UNCERTAIN" }
         check(!sessionRunning) { "CAPTURE_MUST_BE_STOPPED" }
         check(dao.pending() == 0) { "PENDING_EVIDENCE_MUST_BE_RESOLVED" }
-        // Keep old Keystore keys and receipts. No evidence can be reassigned to a new identity.
-        check(prefs.edit().remove("device").remove("alias").remove("pair_state").remove("rules").remove("sms_cursor")
-            .remove("paired_at").remove("last_heartbeat").remove("last_alert").putBoolean("backfill_complete", false)
-            .putBoolean("identity_blocked", false).putString("error", "").commit()) { "STORAGE_UNAVAILABLE" }
-        rules = null; trust = "Not paired"; gatewayOpen = false; lastHeartbeatElapsed = 0
+        // Archive the association/receipt before removing any resolved pending alias.
+        val archives = prefs.getString("pair_history", null)?.let { JSONArray(vault.decrypt(it, "legacy-pair-history-v2")) } ?: JSONArray()
+        archives.put(JSONObject(prefs.all.filterKeys { it != "pair_history" }))
+        val archived = vault.encrypt(archives.toString(), "legacy-pair-history-v2")
+        identityBarrier.changed()
+        check(prefs.edit().putString("pair_history", archived).remove("alias").remove("pair_state").remove("pair_receipt")
+            .putString("error", "").commit()) { "STORAGE_UNAVAILABLE" }
         refreshHealth()
-    }
+    } }
     fun summary(item: Envelope): String = runCatching {
         if (item.kind != "signal") return@runCatching "Device health report"
         val json = JSONObject(vault.decrypt(item.encryptedPayload, "${item.deviceId}:${item.id}"))

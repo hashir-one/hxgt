@@ -16,13 +16,14 @@ import java.util.Collections
 import java.util.UUID
 
 class StagingPairingDeviceTest {
+    @org.junit.Before fun stagingOnly() { org.junit.Assume.assumeTrue(BuildConfig.STAGING_PAIRING) }
     private class Fixture {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val name = "stage-test-${UUID.randomUUID()}"
         val identity = context.getSharedPreferences(name, Context.MODE_PRIVATE)
         val journal = context.getSharedPreferences("$name-staging", Context.MODE_PRIVATE)
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        val originalAliases = Collections.list(store.aliases()).toSet()
+        val ownedAliases = mutableSetOf<String>()
         val db = Room.inMemoryDatabaseBuilder(context, CaptureDatabase::class.java).build()
         val bodies = mutableListOf<String>()
         var response: () -> ApiResult = { ApiResult(422, JSONObject().put("error", "ATTESTATION_REJECTED")) }
@@ -41,14 +42,16 @@ class StagingPairingDeviceTest {
         suspend fun close() {
             repo.scope.coroutineContext[Job]!!.cancelAndJoin()
             db.close()
+            journal.getString("journal", null)?.let {
+                val attempts = JSONObject(repo.vault.decrypt(it, "staging-pairing-journal-v1")).getJSONArray("attempts")
+                for (i in 0 until attempts.length()) ownedAliases += attempts.getJSONObject(i).getString("alias")
+            }
             identity.edit().clear().commit(); journal.edit().clear().commit()
-            // Isolated test execution: delete only the staging/test aliases created by this fixture.
-            (Collections.list(store.aliases()).toSet() - originalAliases)
-                .filter { it.startsWith("hx-staging-") || it.startsWith("stage-test-") }
-                .forEach { store.deleteEntry(it) }
+            ownedAliases.forEach { store.deleteEntry(it) }
         }
         fun oldPending(error: String): String {
             val alias = "stage-test-${UUID.randomUUID()}"
+            ownedAliases += alias
             repo.vault.generate(alias, "Z".repeat(48))
             identity.edit().putString("alias", alias).putString("pair_state", "sending").putString("error", error).commit()
             return alias
@@ -58,6 +61,7 @@ class StagingPairingDeviceTest {
         val f = Fixture()
         try {
             val oldKey = f.oldPending("ATTESTATION_REJECTED")
+            f.identity.edit().putString("device", UUID.randomUUID().toString()).putString("pair_state", "paired").commit()
             val before = f.identity.all.toMap()
             val evidence = Envelope("preserve", "old-device", "fingerprint", "signal", "sms", "opaque ciphertext", 1, state = "blocked", errorCode = "HTTP_403")
             f.db.outbox().insert(evidence)
@@ -72,7 +76,7 @@ class StagingPairingDeviceTest {
             assertEquals("rejected", f.flow.view()!!.state)
             val restored = StagingPairing(f.journal, f.identity, f.repo.vault, f.transport, { f.time })
             val newId = UUID.randomUUID().toString()
-            f.response = { ApiResult(201, JSONObject().put("device_id", newId)) }
+            f.response = { ApiResult(201, JSONObject().put("device_id", newId).put("status", "offline").put("attestation_status", "verified")) }
             restored.submit()
             assertEquals(f.bodies[0], f.bodies[1])
             val sent = JSONObject(f.bodies[0])
@@ -138,10 +142,11 @@ class StagingPairingDeviceTest {
         val f = Fixture()
         try {
             val oldKey = f.oldPending("ATTESTATION_REJECTED")
+            f.identity.edit().putString("device", UUID.randomUUID().toString()).putString("pair_state", "paired").commit()
             val before = f.identity.all.toMap()
             f.flow.prepare("G".repeat(48), f.expiry())
             val id = UUID.randomUUID().toString()
-            f.response = { ApiResult(201, JSONObject().put("device_id", id)) }
+            f.response = { ApiResult(201, JSONObject().put("device_id", id).put("status", "offline").put("attestation_status", "verified")) }
             f.flow.submit()
             assertEquals(before, f.identity.all)
             f.repo.activateStagedPairing()
@@ -165,4 +170,93 @@ class StagingPairingDeviceTest {
             } finally { f.close() }
         }
     }
+    @Test fun legacyErrorsCannotReplaceAttemptBoundReceipts() = runBlocking {
+        for (code in listOf("ATTESTATION_REJECTED", "PAIRING_NOT_AVAILABLE", "DEVICE_SLOT_IN_USE", "MIGRATION_DEVICE_REVOKED")) {
+            val f = Fixture()
+            try {
+                f.oldPending(code)
+                val before = f.identity.all.toMap()
+                assertEquals("PAIRING_OUTCOME_UNCERTAIN", runCatching { f.repo.prepareFreshPairing() }.exceptionOrNull()!!.message)
+                assertEquals("PAIRING_OUTCOME_UNCERTAIN", runCatching { f.flow.prepare("I".repeat(48), f.expiry()) }.exceptionOrNull()!!.message)
+                assertEquals(before, f.identity.all)
+                assertTrue(f.bodies.isEmpty())
+            } finally { f.close() }
+        }
+    }
+    @Test fun submissionGuardsOldIdentityBeforeServerCanRevokeIt() = runBlocking {
+        val f = Fixture()
+        try {
+            f.oldPending("old")
+            f.identity.edit().putString("device", UUID.randomUUID().toString()).putString("pair_state", "paired").putBoolean("consent", true).commit()
+            f.repo.prepareStagedPairing("J".repeat(48), f.expiry())
+            f.repo.setCaptureSession(true)
+            assertEquals("CAPTURE_MUST_BE_STOPPED", runCatching { f.repo.submitStagedPairing() }.exceptionOrNull()!!.message)
+            f.repo.setCaptureSession(false)
+            val row = Envelope("retained", f.repo.device()!!, "unique", "signal", "sms", "ciphertext", 1)
+            f.db.outbox().insert(row)
+            assertEquals("PENDING_EVIDENCE_MUST_BE_RESOLVED", runCatching { f.repo.submitStagedPairing() }.exceptionOrNull()!!.message)
+            assertTrue(f.bodies.isEmpty())
+            assertEquals(listOf(row), f.db.outbox().observe().first())
+            assertEquals("prepared", f.flow.view()!!.state)
+        } finally { f.close() }
+    }
+    @Test fun interruptedSubmissionRemainsBlockedAcrossRecreationAndLegacyReset() = runBlocking {
+        val f = Fixture()
+        try {
+            f.flow.prepare("K".repeat(48), f.expiry())
+            f.response = { throw CancellationException("process stopped after sending") }
+            runCatching { f.flow.submit() }
+            val restored = StagingPairing(f.journal, f.identity, f.repo.vault, f.transport, { f.time })
+            assertEquals("uncertain", restored.view()!!.state)
+            assertEquals("PAIRING_OUTCOME_UNCERTAIN", runCatching { f.repo.prepareFreshPairing() }.exceptionOrNull()!!.message)
+            assertEquals("PAIRING_OUTCOME_UNCERTAIN", runCatching { f.repo.pair("L".repeat(48)) }.exceptionOrNull()!!.message)
+            assertEquals(1, f.bodies.size)
+        } finally { f.close() }
+    }
+    @Test fun activationRecoversAfterIdentityCommitWithoutLosingOldArchive() = runBlocking {
+        val f = Fixture()
+        try {
+            val old = f.oldPending("old")
+            f.identity.edit().putString("device", UUID.randomUUID().toString()).putString("pair_state", "paired").commit()
+            f.flow.prepare("M".repeat(48), f.expiry())
+            val id = UUID.randomUUID().toString()
+            f.response = { ApiResult(201, JSONObject().put("device_id", id).put("status", "offline").put("attestation_status", "verified")) }
+            f.flow.submit()
+            runCatching {
+                f.flow.activate { device, alias ->
+                    f.identity.edit().putString("device", device).putString("alias", alias).putString("pair_state", "paired").commit()
+                    throw CancellationException("crash after commit")
+                }
+            }
+            val restored = StagingPairing(f.journal, f.identity, f.repo.vault, f.transport, { f.time })
+            restored.activate { _, _ -> fail("Already installed identity must not be installed again") }
+            assertEquals("activated", restored.view()!!.state)
+            val record = JSONObject(f.repo.vault.decrypt(f.journal.getString("journal", null)!!, "staging-pairing-journal-v1"))
+            assertEquals(old, record.getJSONArray("attempts").getJSONObject(0).getJSONObject("previous_capture_preferences").getString("alias"))
+            assertTrue(f.store.containsAlias(old))
+        } finally { f.close() }
+    }
+    @Test fun incomplete201AndUnavailableTokenPreserveUncertainAttempts() = runBlocking {
+        val id = UUID.randomUUID().toString()
+        val replies = listOf(
+            ApiResult(201, JSONObject().put("device_id", id)),
+            ApiResult(201, JSONObject().put("device_id", id).put("status", "offline").put("attestation_status", "submitted")),
+            ApiResult(201, JSONObject().put("device_id", id).put("status", "online").put("attestation_status", "verified")),
+            ApiResult(422, JSONObject().put("message", "PAIRING_NOT_AVAILABLE")),
+            ApiResult(422, JSONObject().put("message", "DEVICE_SLOT_IN_USE")),
+            ApiResult(422, JSONObject().put("message", "MIGRATION_DEVICE_REVOKED")))
+        for (reply in replies) {
+            val f = Fixture()
+            try {
+                f.flow.prepare("N".repeat(48), f.expiry())
+                f.response = { reply }; runCatching { f.flow.submit() }
+                assertEquals("uncertain", f.flow.view()!!.state)
+                assertNull(f.repo.device())
+                assertTrue(runCatching { f.repo.activateStagedPairing() }.isFailure)
+                assertTrue(runCatching { f.flow.prepare("O".repeat(48), f.expiry()) }.isFailure)
+                assertEquals(1, f.bodies.size)
+            } finally { f.close() }
+        }
+    }
+
 }

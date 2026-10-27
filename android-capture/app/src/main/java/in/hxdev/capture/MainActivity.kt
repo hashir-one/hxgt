@@ -76,7 +76,7 @@ class MainActivity : ComponentActivity() {
         val authenticate = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == RESULT_OK) scope.launch {
                 runCatching { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { repo.prepareFreshPairing() } }
-                    .onSuccess { page = 1; notice = "Ready for a fresh owner-approved pairing. Generate a new QR in the merchant Devices page, then scan it here." }
+                    .onSuccess { page = 1; notice = "The resolved attempt is archived. Generate a fresh owner-approved QR; its new key needs a new server fingerprint." }
                     .onFailure { notice = PairingFeedback.message(it.message.orEmpty()) }
             }
         }
@@ -149,11 +149,11 @@ class MainActivity : ComponentActivity() {
                             } else if (h.device != null) {
                                 Text("Device paired · ${displayTrust(h.trust)}")
                                 Text("Pairing does not mean this phone is ready to accept payments.")
-                                Text("If the owner revoked this device, prepare a new pairing before scanning another QR.")
+                                Text("Existing identities are preserved. Use staging replacement after resolving original evidence. The legacy reset cannot discard a paired identity.")
                                 OutlinedButton(onClick = { reset = true }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Prepare a new pairing") }
                             } else if (h.pairingRecovery) {
                                 Text("Previous pairing needs recovery", fontWeight = FontWeight.Bold)
-                                Text("This phone still has a signing key from an unfinished pairing. Check the merchant Devices page first. After the owner revokes or approves replacement of that entry, prepare a new pairing here.")
+                                Text("The unfinished attempt remains saved. Only an attempt-bound definitive rejection permits local archival. A lost or legacy result needs server pending-key recovery, which is not yet available.")
                                 if (h.error.isNotEmpty()) {
                                     Text(PairingFeedback.message(h.error))
                                     Text("Code: ${h.error}", style = MaterialTheme.typography.labelSmall)
@@ -213,7 +213,7 @@ class MainActivity : ComponentActivity() {
                             OutlinedButton(onClick = { open(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS) }, modifier = Modifier.fillMaxWidth()) { Text("Open battery settings") }
                         }
                         Section("Recovery & diagnostics") {
-                            Text("For an interrupted pairing, first ask the owner to check the Devices page. A consumed token requires an owner-approved replacement; repeated retries cannot recover the device ID.")
+                            Text("An interrupted pairing requires an authoritative pending-key recovery API. The owner panel cannot establish its key outcome. Keep existing keys and evidence; repeated submissions or expiry do not resolve it.")
                             OutlinedButton(onClick = { work { repo.recover() } }, enabled = !busy && h.device != null, modifier = Modifier.fillMaxWidth()) { Text("Refresh rules & retry blocked uploads") }
                             OutlinedButton(onClick = {
                                 val report = "HX Pay ${BuildConfig.VERSION_NAME}\nAndroid ${Build.VERSION.RELEASE}\nSession=${h.session}\nSMS=${h.sms}\nListener=${h.notifications}\nParser=${h.parserVersion}\nPending=${h.pending}\nBlocked=${h.blocked}\nError=${h.error}"
@@ -236,7 +236,7 @@ class MainActivity : ComponentActivity() {
             text = { Text(when {
                 h.session -> PairingFeedback.message("CAPTURE_MUST_BE_STOPPED")
                 h.pending > 0 -> PairingFeedback.message("PENDING_EVIDENCE_MUST_BE_RESOLVED")
-                else -> "The owner must revoke or approve replacement of the old device in the merchant panel. Verify your phone lock to prepare a fresh pairing. Old keys and delivered receipts are preserved."
+                else -> "This action can archive only a definitively rejected attempt with a matching durable receipt. Paired identities and uncertain or legacy attempts stay blocked. The owner panel cannot override this guard."
             }) },
             confirmButton = { TextButton(onClick = {
                 reset = false
@@ -296,9 +296,9 @@ class MainActivity : ComponentActivity() {
             if (stage.detail.isNotEmpty()) Text(stage.detail, style = MaterialTheme.typography.bodySmall)
             when (stage.state) {
                 "prepared", "rejected" -> {
-                    Text("Give this fingerprint to the server operator. Submit only after its staging exception is configured.")
+                    Text("Give this fingerprint to the server operator. Submission requires its matching exception, stopped capture and no unresolved evidence: server registration can immediately revoke the old key.")
                     Row { Checkbox(serverPinReady, { serverPinReady = it }); Text("The server exception matches this fingerprint.", Modifier.padding(top = 12.dp)) }
-                    Button(onClick = { work { repo.submitStagedPairing() } }, enabled = !locked && serverPinReady && h.configured) { Text("Submit this saved pairing") }
+                    Button(onClick = { work { repo.submitStagedPairing() } }, enabled = !locked && serverPinReady && h.configured && !h.session && h.pending == 0) { Text("Submit this saved pairing") }
                 }
                 "uncertain" -> Text("Submission outcome unknown. Ask the operator to check this fingerprint on the server. Retry and replacement are blocked; expiry does not prove rejection.")
                 "accepted" -> {

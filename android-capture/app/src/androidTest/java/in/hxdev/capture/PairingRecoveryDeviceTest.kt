@@ -26,8 +26,8 @@ class PairingRecoveryDeviceTest {
             override suspend fun request(method: String, path: String, body: ByteArray, device: String?, alias: String?): ApiResult {
                 if (path.endsWith("/pair")) {
                     pairRequests++
-                    return if (accept) ApiResult(201, JSONObject().put("device_id", id))
-                        else ApiResult(422, JSONObject().put("message", "DEVICE_SLOT_IN_USE"))
+                    return if (accept) ApiResult(201, JSONObject().put("device_id", id).put("status", "offline").put("attestation_status", "verified"))
+                        else ApiResult(422, JSONObject().put("error", "ATTESTATION_REJECTED"))
                 }
                 return ApiResult(200, JSONObject().put("version", JSONObject.NULL))
             }
@@ -36,8 +36,8 @@ class PairingRecoveryDeviceTest {
         val generatedAliases = mutableSetOf<String>()
         try {
             val failure = runCatching { repo.pair("A".repeat(48)) }.exceptionOrNull()
-            assertEquals("DEVICE_SLOT_IN_USE", (failure as PairingFailure).code)
-            assertEquals("DEVICE_SLOT_IN_USE", prefs.getString("error", null))
+            assertEquals("ATTESTATION_REJECTED", (failure as PairingFailure).code)
+            assertEquals("ATTESTATION_REJECTED", prefs.getString("error", null))
             val oldAlias = prefs.getString("alias", null)!!
             generatedAliases += oldAlias
             repo.refreshHealth()
