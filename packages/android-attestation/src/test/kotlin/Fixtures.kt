@@ -77,11 +77,13 @@ fun main(args: Array<String>) {
             "certificates" to certs.map { b64(it.encoded) }, "root" to pem("CERTIFICATE", factory.root.encoded),
             "public_key" to pem("PUBLIC KEY", certs.first().publicKey.encoded), "token" to token,
             "serials" to certs.map { it.serialNumber.toString(16) }
-        )) + "\n")
+        ) + if (name == "recovery_test") mapOf("synthetic_private_key" to pem("PRIVATE KEY", factory.leafKey.private.encoded)) else emptyMap()) + "\n")
     }
     for ((name, description) in variants) save(name, pathFactory.generateCertPath(description).certificatesWithAnchor)
     save("rkp", pathFactory.generateCertPath(valid, remotelyProvisioned = true).certificatesWithAnchor)
     val original = pathFactory.generateCertPath(valid, leafKey = factory.leafKey.public).certificatesWithAnchor
+    // Synthetic test-only key for proof-of-possession + real-verifier concurrency tests.
+    save("recovery_test", original)
     val appended = factory.generateLeafCert(signingKey = factory.leafKey.private, issuer = X500Name(original.first().subjectX500Principal.name), extension = valid.asExtension())
     save("appended", listOf(appended) + original)
     val extraAttestation = factory.generateAttestationCert(extraExtension = valid.asExtension())
@@ -93,5 +95,5 @@ fun main(args: Array<String>) {
     // Valid certificate format and extension, incorrect issuer signature.
     val badSignature = factory.generateLeafCert(signingKey = factory.rootKey.private, extension = valid.asExtension())
     save("bad_signature", listOf(badSignature) + original.drop(1))
-    println("Generated ${variants.size + 6} synthetic fixtures; never trust these roots outside isolated tests.")
+    println("Generated ${variants.size + 7} synthetic fixtures; never trust these roots outside isolated tests.")
 }

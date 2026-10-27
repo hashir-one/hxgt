@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Device;
 use App\Domain\Devices\AttestationFailure;
 use App\Domain\Devices\AttestationVerifier;
 use App\Domain\Devices\GatewayHealthService;
+use App\Domain\Devices\PairingKeyRegistry;
 use App\Domain\Payments\PaymentMatchingService;
 use App\Http\Controllers\Controller;
 use App\Models\Device;
@@ -57,6 +58,11 @@ class DeviceController extends Controller
             : null;
 
         $device = DB::transaction(function () use ($pairing, $payload, $attestationStatus, $attestationDigest, $verification, $audit): Device {
+            $material = PairingKeyRegistry::material($payload['public_key']);
+            abort_if($material === null, 422, 'KEY_POLICY');
+            $keyState = app(PairingKeyRegistry::class)->lock($material['spki_sha256']);
+            abort_if($keyState->closed_at !== null, 422, 'PAIRING_KEY_CLOSED');
+            abort_if($keyState->device_id !== null, 422, 'DEVICE_KEY_ALREADY_REGISTERED');
             $merchant = Merchant::whereKey($pairing->merchant_id)->lockForUpdate()->firstOrFail();
             $pairing = DevicePairing::query()->lockForUpdate()->findOrFail($pairing->id);
             if ($pairing->consumed_at !== null || $pairing->expires_at->lte(now()) || $pairing->approval_status !== 'approved'
@@ -98,11 +104,13 @@ class DeviceController extends Controller
                 ]),
             ]);
             $pairing->update(['consumed_at' => now(), 'approval_status' => 'consumed']);
+            DB::table('device_key_states')->where('spki_sha256', $material['spki_sha256'])
+                ->update(['device_id' => $device->id]);
             $audit->record('device.paired', $device->merchant_id, Device::class, $device->id,
                 metadata: $verification['evidence'], includeRequestContext: false);
 
             return $device;
-        });
+        }, 3);
 
         return response()->json(['device_id' => $device->public_id, 'status' => $device->status, 'attestation_status' => 'verified'], 201);
     }

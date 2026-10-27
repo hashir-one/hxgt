@@ -2,10 +2,14 @@
 
 Before changing pairing or recovery behavior, read
 [`../docs/ANDROID-HANDOFF.md`](../docs/ANDROID-HANDOFF.md), especially
-"Server review of Android commit fe562a6 — instructions for the app agent".
-That section records the next Android fixes, current server contract, and missing
-server recovery API. Check the current source before treating older handoff
-statements as implemented behavior.
+"Server return handoff — pending-key recovery implementation, 27 October 2026".
+Earlier sections preserve the review history; check current source before
+treating older handoff statements as implemented behavior.
+
+The latest server return handoff supersedes the earlier missing-API note. Read
+[`../docs/PENDING-KEY-RECOVERY-API.md`](../docs/PENDING-KEY-RECOVERY-API.md) before
+integrating pending-key recovery. Follow its exact signing and receipt contract;
+deployment and physical recovery must be confirmed separately from source pushes.
 
 Preserve existing phone identity, Android Keystore aliases, encrypted attempt
 history, and unresolved outbox records. Uncertain submissions stay blocked until

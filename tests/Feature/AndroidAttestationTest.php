@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Domain\Devices\AndroidAttestationTrust;
 use App\Domain\Devices\AttestationFailure;
 use App\Domain\Devices\AttestationVerifier;
+use App\Domain\Devices\PairingKeyRegistry;
 use App\Models\AuditLog;
 use App\Models\Device;
 use App\Models\DevicePairing;
@@ -13,6 +14,7 @@ use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Factory;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
@@ -95,6 +97,8 @@ class AndroidAttestationTest extends TestCase
             ->assertJsonPath('attestation_status', 'verified')->assertJsonPath('status', 'offline');
         $device = Device::sole();
         $this->assertSame('verified', $device->attestation_status);
+        $this->assertSame($device->id, DB::table('device_key_states')->where('spki_sha256',
+            PairingKeyRegistry::material($device->public_key)['spki_sha256'])->sole()->device_id);
         $this->assertSame(202610, $device->metadata['attestation']['os_patch']);
         $this->assertNotNull($pairing->fresh()->consumed_at);
         $this->assertSame('consumed', $pairing->fresh()->approval_status);
@@ -453,6 +457,24 @@ class AndroidAttestationTest extends TestCase
             ->assertJsonPath('details.max_age_months', 6);
 
         $this->assertPreserved($pairing, $old);
+    }
+
+    public function test_recovery_fence_committed_during_attestation_prevents_late_pairing_and_revocation(): void
+    {
+        [$pairing, $old] = $this->pairing(true);
+        $fingerprint = PairingKeyRegistry::material($this->fixture()['public_key'])['spki_sha256'];
+        $this->trust(duringFetch: function () use ($fingerprint): void {
+            DB::transaction(function () use ($fingerprint): void {
+                app(PairingKeyRegistry::class)->lock($fingerprint);
+                DB::table('device_key_states')->where('spki_sha256', $fingerprint)->update(['closed_at' => now()]);
+            });
+        });
+
+        $this->postJson('/api/device/v1/pair', $this->payload())->assertStatus(422)->assertJsonPath('message', 'PAIRING_KEY_CLOSED');
+
+        $this->assertPreserved($pairing, $old);
+        $this->assertNull(DB::table('device_key_states')->sole()->device_id);
+        $this->assertSame(0, AuditLog::whereIn('action', ['device.paired', 'device.migrated'])->count());
     }
 
     private function certificatePem(string $der): string

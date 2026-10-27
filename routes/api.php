@@ -4,6 +4,7 @@ use App\Http\Controllers\Api\EmailSignalController;
 use App\Http\Controllers\Api\EventController;
 use App\Http\Controllers\Api\OrderController;
 use App\Http\Controllers\Device\DeviceController;
+use App\Http\Controllers\Device\PairingRecoveryController;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('v1')->group(function (): void {
@@ -21,5 +22,6 @@ Route::prefix('device/v1')->middleware('device.signature')->group(function (): v
 });
 
 Route::post('/device/v1/pair', [DeviceController::class, 'pair'])->middleware('throttle:10,1');
+Route::post('/device/v1/pair/recovery', [PairingRecoveryController::class, 'resolve'])->middleware('throttle:10,1');
 
 Route::post('/email/v1/signals', [EmailSignalController::class, 'store'])->middleware('throttle:120,1');

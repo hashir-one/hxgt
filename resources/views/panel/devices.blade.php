@@ -1,6 +1,22 @@
 @extends('layouts.app')
 
 @section('content')
+@if(auth()->user()->role === 'owner')
+<section class="surface mb-6 rounded-2xl p-6">
+    <h2 class="text-lg font-semibold">Recover an uncertain pairing</h2>
+    <p class="mt-2 text-sm text-muted">Use the public key exported by the phone's saved pending attempt. The phone must sign the recovery challenge. If the key was never registered, recovery permanently prevents it from registering; a new pairing will need a new key. Existing phone data and unresolved records must be retained.</p>
+    <form method="post" action="{{ route('panel.devices.recovery-otp') }}" class="mt-4">@csrf<button class="btn-secondary">Send owner recovery code</button></form>
+    <form method="post" action="{{ route('panel.devices.recovery-challenges') }}" class="mt-4 grid gap-3">@csrf
+        <label class="field-label">Pending public key PEM<textarea name="public_key" required maxlength="8192" rows="5" class="field" placeholder="-----BEGIN PUBLIC KEY-----"></textarea></label>
+        <label class="field-label">Recovery email code<input name="otp" required inputmode="numeric" pattern="[0-9]{6}" maxlength="6" class="field" autocomplete="one-time-code"></label>
+        <button class="btn-secondary">Authorize key recovery</button>
+    </form>
+    @if(session('pairing_recovery_challenge'))
+        <p class="mt-4 text-sm text-muted">Transfer this challenge to the phone. Confirm its fingerprint matches the retained key. Expires {{ session('pairing_recovery_challenge.expires_at') }}.</p>
+        <label class="field-label mt-3">Recovery challenge JSON<textarea readonly rows="12" class="field font-mono text-xs">{{ json_encode(session('pairing_recovery_challenge'), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) }}</textarea></label>
+    @endif
+</section>
+@endif
 @if($latestPairing)
 <section class="surface mb-6 rounded-2xl p-6" data-pairing-status-url="{{ route('panel.devices.pairing-status', $latestPairing) }}" data-pairing-poll="{{ $pairingStatus['poll'] ? 'true' : 'false' }}">
     <h2 class="text-lg font-semibold">Latest pairing · Slot {{ $latestPairing->slot_number }}</h2>

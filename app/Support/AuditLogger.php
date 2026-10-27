@@ -18,7 +18,7 @@ final class AuditLogger
         bool $includeRequestContext = true,
     ): AuditLog {
         // Pairing audit hooks must not retain attacker-controlled headers or identifiers.
-        $includeRequestContext = $includeRequestContext && ! request()->is('api/device/v1/pair');
+        $includeRequestContext = $includeRequestContext && ! request()->is('api/device/v1/pair', 'api/device/v1/pair/*', 'panel/devices/recovery/*');
 
         return AuditLog::create([
             'actor_type' => auth()->check() ? 'user' : 'system',

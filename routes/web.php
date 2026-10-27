@@ -4,6 +4,7 @@ use App\Http\Controllers\AdminController;
 use App\Http\Controllers\AdminTestLabController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\CheckoutController;
+use App\Http\Controllers\Device\PairingRecoveryController;
 use App\Http\Controllers\LivePaymentTestController;
 use App\Http\Controllers\MerchantController;
 use App\Http\Controllers\MerchantPreviewController;
@@ -50,6 +51,8 @@ Route::middleware(['auth', RequireSecondFactor::class, MerchantPanelAccess::clas
     Route::get('/devices', [PanelController::class, 'devices'])->name('devices');
     Route::get('/devices/pairings/{pairing}/status', [PanelController::class, 'pairingStatus'])->middleware('throttle:30,1')->name('devices.pairing-status');
     Route::post('/devices/otp', [PanelController::class, 'pairingOtp'])->middleware('throttle:3,5')->name('devices.otp');
+    Route::post('/devices/recovery/otp', [PairingRecoveryController::class, 'otp'])->middleware('throttle:3,5')->name('devices.recovery-otp');
+    Route::post('/devices/recovery/challenges', [PairingRecoveryController::class, 'issue'])->middleware('throttle:5,1')->name('devices.recovery-challenges');
     Route::post('/devices/approval', [PanelController::class, 'requestDeviceApproval'])->name('devices.approval');
     Route::post('/devices/pair', [PanelController::class, 'createPairing'])->name('devices.pair');
     Route::delete('/devices/{device}', [PanelController::class, 'revokeDevice'])->name('devices.revoke');

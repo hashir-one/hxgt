@@ -2,6 +2,12 @@
 
 Gateway baseline: `3c152dc` (Android attestation verification and scoped staging vendor exception). Android source is now in `android-capture/`. Public TLS pins are configuration values; no TLS private key, APK signing key, QR token, phone database or device diagnostic export is included.
 
+**Latest server update, 27 October:** the pending-key recovery API is now
+implemented in source. Read [PENDING-KEY-RECOVERY-API.md](PENDING-KEY-RECOVERY-API.md)
+and the final server return handoff below before integrating. Earlier statements
+that the API is missing describe previous commits. Deployment/migration and
+physical phone recovery are still separate steps.
+
 ## Initial Android implementation status at fe562a6 (historical)
 
 Kotlin/Compose app, hardware P-256 Keystore identity, pinned TLS, encrypted immutable Room outbox, SMS and notification listeners, foreground capture, backfill, signed API transport and tests are included. The latest staging recovery flow is build-tested but **not yet physically tested or installed**. Earlier physical results in `android-capture/TEST-RESULTS.md` apply to the prior build only. No real bank payment or production acceptance is claimed.
@@ -215,3 +221,73 @@ The phone still stores `ATTESTATION_REJECTED` for a legacy pending attempt witho
 The card now prioritizes the uncertain pairing state with explicit server-recovery guidance and labels the underlying code as the last saved error. ATTESTATION_REJECTED also has an explicit explanation. No pairing state, permissions, trust policy or recovery guard changed.
 
 Build and 19 JVM tests passed; lint passed with 0 errors. The existing staging UI regression now checks that the misleading text is absent and the correct recovery guidance is visible. The phone was reconnected and the message-only update installed in place. The focused staging UI regression passed (1 test), confirming that the generic permission/network text is absent and the actual recovery guidance is visible. Capture preferences remained byte-for-byte unchanged. Only the test package was uninstalled. Current installed APK SHA-256: `37B9AF6E66C12078AEE5BEE4F56FE2A3415D8F568FC4FBD7116BE5101F02EBD5`. The server recovery dependency is unchanged.
+
+## Server return handoff — pending-key recovery implementation, 27 October 2026
+
+Reviewed app baseline: `ab0434d`. Implemented the missing owner-authorized recovery
+API and a permanent key fence shared with the registration transaction. Exact
+routes, canonical signing bytes, schemas, errors, tests and deployment instructions
+are in [PENDING-KEY-RECOVERY-API.md](PENDING-KEY-RECOVERY-API.md).
+
+### Android integration task
+
+1. Keep the phone's retained alias/key and unresolved outbox intact. Export its
+   existing public PEM. The owner can now request a separate recovery email code
+   and authorize this exact key in the Devices panel. The panel displays the
+   resulting challenge JSON. Owner routes are browser-session/CSRF/MFA protected;
+   the app should not collect the owner's password or email code.
+2. Add recovery challenge import/review and phone-credential confirmation. Check
+   gateway origin, exact protocol/action/scope/path/method, merchant, expiry,
+   nonce, recovery UUID and SPKI against the retained key. Reconstruct the
+   documented canonical message and compare it to `signing_payload` before signing.
+   Persist the challenge-to-alias association before submission.
+3. Sign with the existing key using `SHA256withECDSA` and standard Base64 of the
+   DER signature. Add `POST /api/device/v1/pair/recovery` to `DeviceApi` as an
+   explicit proof-authenticated route. It does not need a registered device UUID
+   or `X-Device-*` headers. Preserve pinned HTTPS and response bounds.
+4. Add a distinct recovery receipt validator/journal version. Verify the entire
+   response against the outstanding challenge; do not reuse the normal `/pair`
+   validator that requires `status=offline`. Recovery can return current online,
+   degraded, revoked or historical unverified registrations.
+5. Only `outcome=not_registered_closed`, `key_closed=true`, and null registration
+   allow resolving the old uncertain attempt as never registered and permanently
+   closed. Save that bound receipt first; then permit a fresh **new-key** attempt
+   subject to existing evidence/identity barriers. Keep the old key and history.
+6. For `registered`, retain the returned UUID association. Offer explicit activation
+   only when the recovery receipt has `can_activate=true` and all local evidence
+   guards pass. Never promote an unverified or revoked registration; retain those
+   for the existing owner/admin migration/reconciliation workflow.
+7. Recovery is single-use. A timeout, malformed response, 409 replay, 410 expiry,
+   inaccessible registration or other error does not resolve the old attempt.
+   Obtain a new owner challenge for the **same retained key** and try recovery
+   again. Do not clear local state or generate a new pending key to bypass this.
+8. Test complete/invalid receipts, challenge/key/merchant/origin mismatch, wrong
+   signature encoding, expired/replayed grants, crash before/after receipt storage,
+   recovery-response loss, revoked/unverified records, and preservation of old
+   keys/preferences/outbox in both staging build modes. Report JVM/device results
+   separately. Coordinate deployment before any real recovery request.
+
+The legacy phone does **not** need its lost pairing token for this protocol. Its
+scope is the key across all pairing tokens, which is stronger than cancelling one
+attempt: a final negative permanently prevents registration using that key under
+any token. The Android app must communicate that consequence before signing.
+
+### Server verification and deployment status
+
+Feature tests exercise the real owner challenge/proof endpoints with isolated
+SQLite and synthetic cryptographic keys. PostgreSQL integration uses two processes
+and the real pairing/recovery handlers plus the Java attestation verifier. It
+observes actual database lock contention in both commit orders. The synthetic
+private key in `recovery_test.json` exists only for these tests, not phone recovery.
+Validation passed: full server suite **232 tests / 1,566 assertions**, expanded
+recovery suite **29 tests / 185 assertions**, and PostgreSQL concurrency
+**2 tests / 21 assertions**. Route inspection confirmed all three documented
+recovery endpoints. PHP formatting and whitespace checks passed.
+
+The migration backfills existing canonical P-256 registration references and
+retains revoked/unverified devices. Permanent closure records must be retained;
+rollback that discards them is intentionally blocked. Deploy under maintenance
+with all old pairing writers drained, migrate, and restart every writer together.
+No live database migration, service restart, owner email, or physical recovery was
+performed in this implementation task. The source push is ready for Android
+integration after that coordinated rollout.

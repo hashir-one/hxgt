@@ -28,7 +28,7 @@ class GatewayHeaders
         if ($request->isSecure()) {
             $response->headers->set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
         }
-        if ($request->is('panel*', 'admin*', 'checkout*', 'security*')) {
+        if ($request->is('panel*', 'admin*', 'checkout*', 'security*', 'api/device/v1/pair/recovery')) {
             $response->headers->set('Cache-Control', 'no-store, private');
         }
 
