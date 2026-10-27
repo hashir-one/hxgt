@@ -1,5 +1,9 @@
 # Build and test results
 
+## Message clarification — 27 October 2026
+
+Installed the attestation/recovery message fix in place after reconnection. The focused physical staging UI test passed (1 test); build, 19 JVM tests and lint (0 errors / 30 warnings) passed. Capture preferences remained unchanged. Current installed APK SHA-256: `37B9AF6E66C12078AEE5BEE4F56FE2A3415D8F568FC4FBD7116BE5101F02EBD5`. No pairing submission or recovery override was performed. The review-fix results and hash below describe the preceding build.
+
 ## Review fixes — 27 October 2026
 
 Implemented the gateway review at `52dff7e`. Built debug application/test APKs and ran JVM tests/lint with **both `hxStagingPairing=true` and `false`**. Each passed 19 JVM tests, including canonical success-contract validation, attempt receipt binding, ambiguous failures, two deterministic identity-barrier concurrency cases and gateway RE2/J fixtures. Lint: 0 errors / 30 warnings.
