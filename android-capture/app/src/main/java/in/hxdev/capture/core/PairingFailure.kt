@@ -34,6 +34,7 @@ object PairingFeedback {
             .firstOrNull { it in serverCodes } ?: "PAIR_HTTP_$status"
 
     fun message(code: String): String = when (code) {
+        "ATTESTATION_REJECTED" -> "The server rejected this phone's hardware attestation. Review the server's attestation reason with the operator. Keep the saved key and app data; resolve any uncertain pairing outcome before another attempt."
         "PAIRING_OUTCOME_UNCERTAIN" -> "The previous submission may have reached the server. Keep this key and app data. The operator must resolve its outcome before retrying or preparing another QR."
         "PAIRING_EXPIRY_REQUIRED" -> "Enter the QR's exact expiry from the merchant panel in UTC, for example 2026-10-25T10:30:00Z. It must be within the next five minutes."
         "PAIRING_EXPIRED" -> "This QR has expired. Its key and evidence are retained. A fresh owner-approved QR needs a new key and a new server fingerprint."

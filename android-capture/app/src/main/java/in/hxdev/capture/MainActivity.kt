@@ -337,11 +337,14 @@ class MainActivity : ComponentActivity() {
 }
 @Composable private fun ErrorCard(h: Health) {
     if (h.error.isNotEmpty()) Section("Needs attention") {
-        Text(when (h.error) {
+        Text(if (h.stagedPairing?.state == "uncertain") {
+            "Pairing needs server recovery. This phone has a retained attempt without a confirmed outcome. Keep app data and ask the operator to resolve the pending key. The last saved error is shown below."
+        } else when (h.error) {
             "APPROVED_PARSER_REQUIRED" -> "Ask the operator to publish validated Android-compatible bank rules. No approved parser is active."
-            "PAIRING_RECOVERY_REQUIRED" -> PairingFeedback.message(h.error)
+            "PAIRING_RECOVERY_REQUIRED", "ATTESTATION_REJECTED", "PAIRING_OUTCOME_UNCERTAIN" -> PairingFeedback.message(h.error)
             "STORAGE_UNAVAILABLE", "KEY_OR_QUEUE_UNREADABLE" -> "Evidence storage is unavailable. Preserve app data and contact your operator."
-            else -> "Check network, permissions and merchant device status, then use recovery in Settings."
+            else -> if (h.error.startsWith("PAIR") || h.error.startsWith("ATTESTATION") || h.error.startsWith("MIGRATION") || h.error in setOf("DEVICE_SLOT_IN_USE", "DEVICE_KEY_ALREADY_REGISTERED", "TLS_CONFIGURATION_REQUIRED")) PairingFeedback.message(h.error)
+                else "Review the error code below and the affected capture-health item."
         })
         Text(h.error, style = MaterialTheme.typography.labelSmall)
     }

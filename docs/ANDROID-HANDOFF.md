@@ -207,3 +207,11 @@ Implementation commit: `85776a069564bafa9d804514742ad2a390a0dd81`. The review at
 The gateway agent must implement/finalize the owner-authorized, nonce-bound proof-of-pending-key recovery API described in the review, including atomic/fenced negative outcomes and old-token handling. Then the Android agent can integrate that contract and resolve this retained key safely. A genuinely fresh identity or a version-2 attempt with a definitive bound rejection can use prepare → fingerprint → submit now, subject to owner authorization and the current server policy. Physical hardware-attestation registration, tracked payment and overnight reliability remain separate acceptance work.
 
 Changed code: `core/{PairingContract,IdentityBarrier,StagingPairing,CaptureRepository,PairingFailure}.kt`, `MainActivity.kt`, `capture/Listeners.kt`, `sync/CaptureService.kt`; updated/added JVM and device tests, README, STAGING-PAIRING, BACKEND-CONTRACT and TEST-RESULTS. No gateway runtime files changed in this return patch.
+
+## Follow-up: misleading permissions warning — 27 October 2026
+
+The phone still stores `ATTESTATION_REJECTED` for a legacy pending attempt without a receipt/UUID. Its current-user READ_SMS, RECEIVE_SMS, CAMERA and POST_NOTIFICATIONS permissions were granted, and notification-listener access was enabled. The Needs attention card's generic fallback incorrectly directed the user to check network/permissions.
+
+The card now prioritizes the uncertain pairing state with explicit server-recovery guidance and labels the underlying code as the last saved error. ATTESTATION_REJECTED also has an explicit explanation. No pairing state, permissions, trust policy or recovery guard changed.
+
+Build and 19 JVM tests passed; lint passed with 0 errors. The existing staging UI regression now checks that the misleading text is absent and the correct recovery guidance is visible. Physical verification/installation of this message-only update is pending: the phone disconnected after diagnosis, before `adb install` could start. The previously tested recovery build remains installed.
