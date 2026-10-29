@@ -1,12 +1,13 @@
-# Android and gateway handoff — 27 October 2026
+# Android and gateway handoff — updated 29 October 2026
 
 Gateway baseline: `3c152dc` (Android attestation verification and scoped staging vendor exception). Android source is now in `android-capture/`. Public TLS pins are configuration values; no TLS private key, APK signing key, QR token, phone database or device diagnostic export is included.
 
-**Latest server update, 27 October:** the pending-key recovery API is now
-implemented in source. Read [PENDING-KEY-RECOVERY-API.md](PENDING-KEY-RECOVERY-API.md)
-and the final server return handoff below before integrating. Earlier statements
-that the API is missing describe previous commits. Deployment/migration and
-physical phone recovery are still separate steps.
+**Latest server update, 29 October:** recovery runtime `b6c94d8` is deployed on
+`https://pay.hxdev.in` (staging). The recovery migration is applied and all three
+gateway services restarted at **2026-10-29 16:43:00 UTC**. Read
+[PENDING-KEY-RECOVERY-API.md](PENDING-KEY-RECOVERY-API.md) and the deployment record
+at the end of this handoff. Earlier missing-API/pending-deployment statements
+describe previous commits. Physical phone recovery has not yet been performed.
 
 ## Initial Android implementation status at fe562a6 (historical)
 
@@ -291,3 +292,45 @@ with all old pairing writers drained, migrate, and restart every writer together
 No live database migration, service restart, owner email, or physical recovery was
 performed in this implementation task. The source push is ready for Android
 integration after that coordinated rollout.
+
+## Gateway deployment completed — 29 October 2026
+
+Deployment of runtime commit **`b6c94d8`** to **`https://pay.hxdev.in`**, environment
+**staging**, completed at **2026-10-29 16:43:00 UTC**. This supersedes the earlier
+pending-deployment status; the protocol itself is unchanged.
+
+- Put the application into maintenance and stopped `hx-upi-web`, `hx-upi-queue`
+  and `hx-upi-scheduler`. Confirmed all had stopped and no PHP pairing writer
+  remained before migration.
+- Created a protected pre-migration PostgreSQL backup, restored it into a separate
+  local PostgreSQL instance, and compared every row of all **43 existing tables**
+  with the frozen source. All matched. Removed the restored scratch database and
+  stopped the isolated instance after verification.
+- Applied only `2026_10_27_082400_create_pending_key_recovery_tables` (batch 2).
+  The existing device's canonical key was backfilled. Verified every preexisting
+  table's data remained unchanged (allowing the new migration ledger entry).
+  Environment file and attestation configuration digests were unchanged.
+- Rebuilt configuration, route and view caches. Restarted all three services on
+  the new runtime and reopened traffic. All are active with new process IDs and
+  zero restart failures at the post-deployment check.
+- Public HTTPS checks: `/up` returned **200**; an unknown recovery UUID returned
+  **404 `RECOVERY_UNAVAILABLE`**; an empty proof request returned **422**;
+  the owner challenge route without a browser CSRF token returned **419**.
+  Recovery responses had `Cache-Control: no-store, private`. Cached route
+  inspection confirmed authentication, second-factor and merchant access
+  middleware on both owner routes.
+
+### Android agent: deployment dependency cleared
+
+Implement and test the exact challenge/signature/receipt flow in
+`PENDING-KEY-RECOVERY-API.md`. The server is ready for an owner-authorized recovery
+request against the retained pending key. No owner email was sent, no real
+challenge was issued, and no phone key was closed or recovered during deployment.
+Public smoke tests do not constitute end-to-end phone acceptance.
+
+Keep the existing alias, pending attempt, encrypted history and unresolved outbox.
+Only a valid bound recovery receipt can resolve the uncertain attempt. Obtain a
+fresh recovery email code in the Devices panel and authorize the phone's actual
+retained public PEM when the Android integration is ready. Do not reuse an old
+diagnostic fingerprint without checking the retained key. Record physical-device
+results separately and do not treat deployment as completed pairing.

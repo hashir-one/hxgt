@@ -1,9 +1,12 @@
 # Pending-key recovery API — hx-pair-recovery-v1
 
-Implemented 27 October 2026. This contract supersedes the earlier “recovery API
-missing” notes in the Android handoff. Source availability is not deployment:
-apply the coordinated migration/restart procedure below before enabling the
-Android integration. No physical phone recovery was performed by this change.
+Implemented 27 October 2026. **Deployed to `https://pay.hxdev.in` (staging) on
+29 October 2026 at 16:43 UTC**, runtime commit `b6c94d8`: recovery migration applied,
+all web/queue/scheduler services restarted, public endpoint checks passed. See
+[the deployment record](ANDROID-HANDOFF.md#gateway-deployment-completed--29-october-2026).
+This supersedes earlier missing-API and pending-deployment notes. Physical phone
+recovery has not yet been performed. Other environments still require the
+coordinated migration/restart procedure below.
 
 ## Purpose and scope
 
@@ -285,8 +288,8 @@ Do not prune/clear `device_key_states`, restore a pre-fence backup while allowin
 old requests, or roll back to a pairing writer that ignores it. Migration `down()`
 intentionally refuses to erase permanent fences. Retention/restore changes need
 an explicit reconciliation plan. Recovery does not require changing the existing
-attestation configuration. This source push did not migrate or restart the live
-application.
+attestation configuration. The initial source push did not deploy the application;
+the subsequent 29 October staging deployment is recorded at the top of this file.
 
 ## Verification
 
